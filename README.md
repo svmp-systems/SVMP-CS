@@ -1,6 +1,7 @@
 # SVMP
 
 SVMP is a governance and orchestration layer for AI-powered customer service systems.
+Currently WIP, building off of n8n prototype 
 
 ---
 
@@ -22,3 +23,15 @@ SVMP introduces several architectural components to stabilize AI customer servic
 - **Soft Debounce Queue** — merges fragmented user messages into a single coherent request unit.
 - **Intent Logic Fork** — separates informational queries handled by LLMs from transactional actions executed through APIs.
 - **Governance Layer** — enforces validation, routing rules, and observability across the system.
+
+---
+
+## Included modules
+
+- `app/main.py`: FastAPI app + APScheduler wiring
+- `app/routes/webhook.py`: Meta verification + webhook intake
+- `app/workflows/workflow_a.py`: Ingestion/debounce writes
+- `app/workflows/workflow_b.py`: Processing loop (intent + RAG + escalation)
+- `app/workflows/workflow_c.py`: Janitor cleanup
+- `scripts/setup_indexes.py`: Mongo index setup
+- `scripts/seed_knowledge_base.py`: KB embedding seeding
