@@ -1,0 +1,29 @@
+{
+  "tenantId": "Niyomilan",
+  "entries": [
+    {
+      "_id": "faq-about-company",
+      "domainId": "general",
+      "question": "What does Niyomilan do?",
+      "answer": "Niyomilan helps businesses automate tier-1 customer support across channels like WhatsApp.",
+      "tags": ["about", "company"],
+      "active": true
+    },
+    {
+      "_id": "faq-whatsapp-support",
+      "domainId": "general",
+      "question": "How does your WhatsApp support system work?",
+      "answer": "We ingest customer messages, group fragmented chats, retrieve the best grounded answer, and keep a governance log for every decision.",
+      "tags": ["whatsapp", "support", "product"],
+      "active": true
+    },
+    {
+      "_id": "faq-escalation",
+      "domainId": "general",
+      "question": "What happens when the system is not confident?",
+      "answer": "If the system cannot find a reliable answer, it falls back safely instead of guessing and can be routed for human follow-up.",
+      "tags": ["safety", "escalation"],
+      "active": true
+    }
+  ]
+}
