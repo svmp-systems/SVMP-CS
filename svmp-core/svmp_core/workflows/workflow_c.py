@@ -41,10 +41,11 @@ async def run_workflow_c(
     cutoff_time = current_time - timedelta(hours=runtime_settings.WORKFLOW_C_INTERVAL_HOURS)
 
     list_stale = getattr(database.session_state, "list_stale_sessions", None)
+    has_stale_listing = callable(list_stale)
     stale_sessions: list[SessionState] = []
 
     try:
-        if callable(list_stale):
+        if has_stale_listing:
             stale_sessions = list(await list_stale(cutoff_time))
 
         logs_written = 0
@@ -66,7 +67,7 @@ async def run_workflow_c(
     except Exception as exc:  # pragma: no cover - defensive wrapper
         raise DatabaseError("workflow c cleanup failed") from exc
 
-    stale_sessions_found = len(stale_sessions) if stale_sessions else deleted_count
+    stale_sessions_found = len(stale_sessions) if has_stale_listing else deleted_count
 
     return WorkflowCResult(
         stale_sessions_found=stale_sessions_found,

@@ -156,6 +156,22 @@ async def test_workflow_c_cleans_up_stale_sessions_and_logs_closure() -> None:
 
 
 @pytest.mark.asyncio
+async def test_workflow_c_reports_clean_no_op_when_no_stale_sessions_exist() -> None:
+    """No-op cleanup runs should report zeros cleanly without writing logs."""
+
+    now = datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc)
+    session_repo = CleanupSessionRepository([])
+    database = CleanupDatabase(session_repo)
+
+    result = await run_workflow_c(database, settings=_settings(), now=now)
+
+    assert result.stale_sessions_found == 0
+    assert result.governance_logs_written == 0
+    assert result.sessions_deleted == 0
+    assert database.governance_logs.logs == []
+
+
+@pytest.mark.asyncio
 async def test_workflow_c_wraps_database_failures() -> None:
     """Database failures should be wrapped predictably for the scheduler/runtime."""
 
