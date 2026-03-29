@@ -15,6 +15,13 @@ if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
 from svmp_core.core import IdentityFrame
+from svmp_core.db.base import (
+    Database,
+    GovernanceLogRepository,
+    KnowledgeBaseRepository,
+    SessionStateRepository,
+    TenantRepository,
+)
 from svmp_core.models import (
     GovernanceDecision,
     GovernanceLog,
@@ -140,7 +147,7 @@ def tenant_document(identity_frame: IdentityFrame) -> dict[str, object]:
 def mock_session_repo(session_state: SessionState) -> AsyncMock:
     """Return an async mock shaped like the session repository contract."""
 
-    repo = AsyncMock()
+    repo = AsyncMock(spec=SessionStateRepository)
     repo.get_by_identity.return_value = session_state.model_copy(deep=True)
     repo.create.return_value = session_state.model_copy(deep=True)
     repo.update_by_id.return_value = session_state.model_copy(deep=True)
@@ -153,7 +160,7 @@ def mock_session_repo(session_state: SessionState) -> AsyncMock:
 def mock_knowledge_repo(knowledge_entry: KnowledgeEntry) -> AsyncMock:
     """Return an async mock shaped like the knowledge repository contract."""
 
-    repo = AsyncMock()
+    repo = AsyncMock(spec=KnowledgeBaseRepository)
     repo.list_active_by_tenant_and_domain.return_value = [knowledge_entry.model_copy(deep=True)]
     return repo
 
@@ -162,7 +169,7 @@ def mock_knowledge_repo(knowledge_entry: KnowledgeEntry) -> AsyncMock:
 def mock_governance_repo(governance_log: GovernanceLog) -> AsyncMock:
     """Return an async mock shaped like the governance repository contract."""
 
-    repo = AsyncMock()
+    repo = AsyncMock(spec=GovernanceLogRepository)
     repo.create.return_value = governance_log.model_copy(deep=True)
     return repo
 
@@ -171,7 +178,7 @@ def mock_governance_repo(governance_log: GovernanceLog) -> AsyncMock:
 def mock_tenant_repo(tenant_document: dict[str, object]) -> AsyncMock:
     """Return an async mock shaped like the tenant repository contract."""
 
-    repo = AsyncMock()
+    repo = AsyncMock(spec=TenantRepository)
     repo.get_by_tenant_id.return_value = dict(tenant_document)
     return repo
 
@@ -185,7 +192,7 @@ def mock_database(
 ) -> Mock:
     """Return a database-shaped mock with repository attributes attached."""
 
-    database = Mock()
+    database = Mock(spec=Database)
     database.session_state = mock_session_repo
     database.knowledge_base = mock_knowledge_repo
     database.governance_logs = mock_governance_repo
