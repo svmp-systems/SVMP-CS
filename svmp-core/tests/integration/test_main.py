@@ -91,6 +91,8 @@ class StubTenantRepository(TenantRepository):
 class TestDatabase(Database):
     """Database stub with lifecycle flags for app-factory tests."""
 
+    __test__ = False
+
     def __init__(self) -> None:
         self._session_state = InMemorySessionStateRepository()
         self._knowledge_base = StubKnowledgeRepository()
