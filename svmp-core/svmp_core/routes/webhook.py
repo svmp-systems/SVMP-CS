@@ -28,7 +28,7 @@ def build_webhook_router(
         hub_challenge: str | None = Query(default=None, alias="hub.challenge"),
     ) -> Response:
         verify_token = runtime_settings.WHATSAPP_VERIFY_TOKEN
-        expected_token = verify_token.get_secret_value() if verify_token is not None else None
+        expected_token = verify_token.get_secret_value().strip() if verify_token is not None else None
 
         if hub_mode != "subscribe" or expected_token is None or hub_verify_token != expected_token:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="webhook verification failed")
@@ -51,9 +51,15 @@ def build_webhook_router(
         except DatabaseError as exc:
             raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
 
+        if not session.id:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="workflow a returned a session without an id",
+            )
+
         return {
             "status": "accepted",
-            "sessionId": session.id or "",
+            "sessionId": session.id,
         }
 
     return router

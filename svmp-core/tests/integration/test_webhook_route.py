@@ -157,6 +157,23 @@ def test_webhook_get_verification_returns_challenge() -> None:
     assert response.text == "12345"
 
 
+def test_webhook_get_rejects_invalid_token() -> None:
+    """GET verification should fail closed on token mismatch."""
+
+    client = _build_client()
+
+    response = client.get(
+        "/webhook",
+        params={
+            "hub.mode": "subscribe",
+            "hub.verify_token": "wrong-token",
+            "hub.challenge": "12345",
+        },
+    )
+
+    assert response.status_code == 403
+
+
 def test_webhook_post_intakes_valid_payload() -> None:
     """POST webhook intake should create a session via Workflow A."""
 
