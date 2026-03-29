@@ -67,3 +67,44 @@ def test_choose_domain_raises_when_no_match_and_no_fallback() -> None:
 
     with pytest.raises(RoutingError, match="could not determine a domain"):
         choose_domain("hello there", domains)
+
+
+def test_choose_domain_rejects_ambiguous_matches_without_fallback() -> None:
+    """Equal-score routing ties should not be resolved arbitrarily."""
+
+    domains = [
+        {
+            "domainId": "sales",
+            "name": "Sales",
+            "keywords": ["price"],
+        },
+        {
+            "domainId": "support",
+            "name": "Support",
+            "keywords": ["price"],
+        },
+    ]
+
+    with pytest.raises(RoutingError, match="safely"):
+        choose_domain("price", domains)
+
+
+def test_choose_domain_uses_fallback_for_ambiguous_matches() -> None:
+    """Fallback should be preferred over arbitrary tie-breaking."""
+
+    domains = [
+        {
+            "domainId": "sales",
+            "name": "Sales",
+            "keywords": ["price"],
+        },
+        {
+            "domainId": "support",
+            "name": "Support",
+            "keywords": ["price"],
+        },
+    ]
+
+    selected = choose_domain("price", domains, fallback_domain_id="general")
+
+    assert selected == "general"

@@ -64,6 +64,7 @@ def choose_domain(
 
     best_domain_id: str | None = None
     best_score = 0
+    is_ambiguous = False
 
     for domain in domains:
         domain_id = domain.get("domainId")
@@ -74,11 +75,17 @@ def choose_domain(
         if score > best_score:
             best_score = score
             best_domain_id = domain_id.strip()
+            is_ambiguous = False
+        elif score > 0 and score == best_score:
+            is_ambiguous = True
 
-    if best_domain_id is not None:
+    if best_domain_id is not None and not is_ambiguous:
         return best_domain_id
 
     if fallback_domain_id is not None and fallback_domain_id.strip():
         return fallback_domain_id.strip()
+
+    if is_ambiguous:
+        raise RoutingError("could not determine a domain for the query safely")
 
     raise RoutingError("could not determine a domain for the query")
