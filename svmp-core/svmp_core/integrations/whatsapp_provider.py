@@ -63,16 +63,6 @@ class WhatsAppProvider(ABC):
 
         raise ValidationError(f"{self.name} does not accept JSON webhook payloads")
 
-    def normalize_form_payload(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        tenant_id: str | None,
-    ) -> list[WebhookPayload]:
-        """Normalize a form provider payload into internal webhook payloads."""
-
-        raise ValidationError(f"{self.name} does not accept form webhook payloads")
-
     @abstractmethod
     async def send_text(
         self,
@@ -251,84 +241,9 @@ class MetaWhatsAppProvider(WhatsAppProvider):
         )
 
 
-class TwilioWhatsAppProvider(WhatsAppProvider):
-    """Provider adapter for Twilio WhatsApp webhook payloads."""
-
-    name = "twilio"
-
-    def normalize_form_payload(
-        self,
-        payload: Mapping[str, Any],
-        *,
-        tenant_id: str | None,
-    ) -> list[WebhookPayload]:
-        resolved_tenant_id = _require_non_blank(tenant_id, "tenantId")
-        body = payload.get("Body")
-        from_user = payload.get("From")
-
-        if not isinstance(body, str) or not body.strip():
-            raise ValidationError("Twilio webhook Body is required")
-        if not isinstance(from_user, str) or not from_user.strip():
-            raise ValidationError("Twilio webhook From is required")
-
-        return [
-            WebhookPayload(
-                tenantId=resolved_tenant_id,
-                clientId="whatsapp",
-                userId=_normalize_phone_identity(from_user),
-                text=body,
-                provider=self.name,
-                externalMessageId=payload.get("MessageSid"),
-            )
-        ]
-
-    async def send_text(
-        self,
-        message: OutboundTextMessage,
-        *,
-        settings: Settings,
-    ) -> OutboundSendResult:
-        account_sid = settings.TWILIO_ACCOUNT_SID
-        auth_token = settings.TWILIO_AUTH_TOKEN
-        from_number = settings.TWILIO_WHATSAPP_NUMBER
-
-        if account_sid is None or not account_sid.strip():
-            raise IntegrationError("TWILIO_ACCOUNT_SID is not configured")
-        if auth_token is None:
-            raise IntegrationError("TWILIO_AUTH_TOKEN is not configured")
-        if from_number is None or not from_number.strip():
-            raise IntegrationError("TWILIO_WHATSAPP_NUMBER is not configured")
-
-        url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json"
-        form_data = {
-            "From": from_number,
-            "To": message.user_id if message.user_id.startswith("whatsapp:") else f"whatsapp:{message.user_id}",
-            "Body": message.text,
-        }
-
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(
-                url,
-                data=form_data,
-                auth=(account_sid, auth_token.get_secret_value()),
-            )
-            response.raise_for_status()
-            body = response.json()
-
-        sid = body.get("sid") if isinstance(body, Mapping) else None
-        return OutboundSendResult(
-            provider=self.name,
-            accepted=True,
-            external_message_id=sid if isinstance(sid, str) else None,
-            status="accepted",
-            metadata={"response": body},
-        )
-
-
 _PROVIDERS: dict[str, WhatsAppProvider] = {
     "normalized": NormalizedWhatsAppProvider(),
     "meta": MetaWhatsAppProvider(),
-    "twilio": TwilioWhatsAppProvider(),
 }
 
 
@@ -344,7 +259,6 @@ def get_whatsapp_provider(
     settings: Settings,
     requested_provider: str | None = None,
     payload: Mapping[str, Any] | None = None,
-    content_type: str | None = None,
 ) -> WhatsAppProvider:
     """Resolve the provider adapter for the current webhook request."""
 
@@ -352,8 +266,6 @@ def get_whatsapp_provider(
         provider_name = requested_provider.strip().lower()
     elif payload is not None and is_normalized_payload(payload):
         provider_name = "normalized"
-    elif content_type is not None and "application/x-www-form-urlencoded" in content_type.lower():
-        provider_name = "twilio"
     else:
         provider_name = settings.WHATSAPP_PROVIDER.strip().lower()
 

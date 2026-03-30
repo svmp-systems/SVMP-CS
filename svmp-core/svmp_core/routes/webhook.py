@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from json import JSONDecodeError
 from typing import Any
-from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
 
@@ -71,36 +70,24 @@ def build_webhook_router(
         tenant_id_header: str | None = Header(default=None, alias="X-SVMP-Tenant-Id"),
         provider_header: str | None = Header(default=None, alias="X-SVMP-Provider"),
     ) -> dict[str, Any]:
-        content_type = request.headers.get("content-type")
         resolved_tenant_id = tenant_id_header or tenant_id_query
         requested_provider = provider_header or provider_query
 
         try:
-            if content_type is not None and "application/x-www-form-urlencoded" in content_type.lower():
-                raw_body = (await request.body()).decode("utf-8")
-                raw_payload = dict(parse_qsl(raw_body, keep_blank_values=True))
-            else:
-                raw_payload = await request.json()
-                if not isinstance(raw_payload, Mapping):
-                    raise ValidationError("webhook payload must be a JSON object")
+            raw_payload = await request.json()
+            if not isinstance(raw_payload, Mapping):
+                raise ValidationError("webhook payload must be a JSON object")
 
             provider = get_whatsapp_provider(
                 settings=runtime_settings,
                 requested_provider=requested_provider,
                 payload=raw_payload if isinstance(raw_payload, Mapping) else None,
-                content_type=content_type,
             )
 
-            if content_type is not None and "application/x-www-form-urlencoded" in content_type.lower():
-                payloads = provider.normalize_form_payload(
-                    raw_payload,
-                    tenant_id=resolved_tenant_id,
-                )
-            else:
-                payloads = provider.normalize_json_payload(
-                    raw_payload,
-                    tenant_id=resolved_tenant_id,
-                )
+            payloads = provider.normalize_json_payload(
+                raw_payload,
+                tenant_id=resolved_tenant_id,
+            )
         except JSONDecodeError as exc:
             raise _http_400("webhook payload must be valid JSON") from exc
         except ValidationError as exc:

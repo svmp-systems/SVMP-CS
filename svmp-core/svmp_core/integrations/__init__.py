@@ -9,7 +9,6 @@ from svmp_core.integrations.openai_client import (
 from svmp_core.integrations.whatsapp_provider import (
     MetaWhatsAppProvider,
     NormalizedWhatsAppProvider,
-    TwilioWhatsAppProvider,
     WhatsAppProvider,
     get_whatsapp_provider,
     is_normalized_payload,
@@ -23,7 +22,6 @@ __all__ = [
     "WhatsAppProvider",
     "NormalizedWhatsAppProvider",
     "MetaWhatsAppProvider",
-    "TwilioWhatsAppProvider",
     "get_whatsapp_provider",
     "is_normalized_payload",
 ]
