@@ -158,7 +158,7 @@ def test_webhook_get_verification_returns_challenge() -> None:
 
 
 def test_webhook_post_intakes_valid_payload() -> None:
-    """POST webhook intake should create a session via Workflow A."""
+    """POST webhook intake should accept already-normalized payloads."""
 
     client = _build_client()
 
@@ -175,7 +175,10 @@ def test_webhook_post_intakes_valid_payload() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "status": "accepted",
+        "provider": "normalized",
+        "messageCount": 1,
         "sessionId": "session-1",
+        "sessionIds": ["session-1"],
     }
 
 
@@ -193,4 +196,78 @@ def test_webhook_post_rejects_malformed_payload() -> None:
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid normalized webhook payload"}
+
+
+def test_webhook_post_normalizes_meta_payload() -> None:
+    """Meta webhook JSON should normalize into the internal inbound schema."""
+
+    client = _build_client()
+
+    response = client.post(
+        "/webhook",
+        headers={"X-SVMP-Tenant-Id": "Niyomilan", "X-SVMP-Provider": "meta"},
+        json={
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": "wamid.HBgM123",
+                                        "from": "919845891194",
+                                        "text": {"body": "hello from meta"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "accepted",
+        "provider": "meta",
+        "messageCount": 1,
+        "sessionId": "session-1",
+        "sessionIds": ["session-1"],
+    }
+
+
+def test_webhook_post_rejects_provider_payload_without_tenant() -> None:
+    """Provider-native payloads should require an explicit tenant identity."""
+
+    client = _build_client()
+
+    response = client.post(
+        "/webhook",
+        headers={"X-SVMP-Provider": "meta"},
+        json={
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": "wamid.HBgM123",
+                                        "from": "919845891194",
+                                        "text": {"body": "hello from meta"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tenantId is required"}

@@ -1,0 +1,19 @@
+{
+  "tenantId": "Niyomilan",
+  "domains": [
+    {
+      "domainId": "general",
+      "name": "General",
+      "description": "Questions about the company, support system, contact info, and policies",
+      "keywords": ["what", "company", "contact", "support", "hours", "policy"]
+    }
+  ],
+  "tags": ["demo", "whatsapp"],
+  "settings": {
+    "confidenceThreshold": 0.75
+  },
+  "contactInfo": {
+    "email": "demo@niyomilan.example",
+    "phone": "+910000000000"
+  }
+}

@@ -217,6 +217,10 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         APP_NAME="SVMP-Smoke",
+        MONGODB_URI="mongodb://unit-test",
+        OPENAI_API_KEY="test-key",
+        WHATSAPP_TOKEN="test-whatsapp-token",
+        WHATSAPP_PHONE_NUMBER_ID="1234567890",
         WHATSAPP_VERIFY_TOKEN="verify-me",
         DEBOUNCE_MS=0,
         SIMILARITY_THRESHOLD=0.75,
@@ -247,7 +251,10 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "accepted",
+            "provider": "normalized",
+            "messageCount": 1,
             "sessionId": "session-1",
+            "sessionIds": ["session-1"],
         }
 
         result = await run_workflow_b(

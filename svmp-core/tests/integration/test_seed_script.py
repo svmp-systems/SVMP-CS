@@ -93,3 +93,46 @@ async def test_seed_entries_from_file_uses_writer_upsert_path(tmp_path: Path) ->
     assert writer.entries is not None
     assert writer.entries[0].id == "faq-1"
     assert writer.entries[0].tenant_id == "Niyomilan"
+
+
+@pytest.mark.asyncio
+async def test_mongo_writer_clears_seeded_domain_before_reinserting() -> None:
+    """The Mongo writer should replace a tenant/domain slice, not append to it."""
+
+    module = _load_seed_module()
+
+    class FakeCollection:
+        def __init__(self) -> None:
+            self.deleted_filters: list[dict] = []
+            self.replaced: list[tuple[dict, dict, bool]] = []
+
+        async def delete_many(self, query: dict) -> None:
+            self.deleted_filters.append(dict(query))
+
+        async def replace_one(self, filter_doc: dict, payload: dict, upsert: bool) -> None:
+            self.replaced.append((dict(filter_doc), dict(payload), upsert))
+
+    collection = FakeCollection()
+    writer = module.MongoKnowledgeSeedWriter(collection)
+    entries = [
+        module.KnowledgeEntry(
+            _id="faq-1",
+            tenantId="Niyomilan",
+            domainId="general",
+            question="What do you do?",
+            answer="We help customers.",
+        ),
+        module.KnowledgeEntry(
+            _id="faq-2",
+            tenantId="Niyomilan",
+            domainId="general",
+            question="How does support work?",
+            answer="We automate tier-1 support.",
+        ),
+    ]
+
+    written = await writer.upsert_entries(entries)
+
+    assert written == 2
+    assert collection.deleted_filters == [{"tenantId": "Niyomilan", "domainId": "general"}]
+    assert len(collection.replaced) == 2

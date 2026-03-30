@@ -174,6 +174,16 @@ async def test_connect_initializes_repositories_and_indexes(monkeypatch: pytest.
     assert len(fake_db["knowledge_base"].indexes) == 1
     assert len(fake_db["governance_logs"].indexes) == 1
     assert len(fake_db["tenants"].indexes) == 1
+    assert fake_db["tenants"].indexes[0]["kwargs"] == {
+        "unique": True,
+        "name": "tenant_id_unique",
+        "partialFilterExpression": {
+            "tenantId": {
+                "$exists": True,
+                "$type": "string",
+            }
+        },
+    }
 
     await database.disconnect()
 
