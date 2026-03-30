@@ -38,7 +38,6 @@ class InMemorySessionStateRepository(SessionStateRepository):
                 session.tenant_id == tenant_id
                 and session.client_id == client_id
                 and session.user_id == user_id
-                and session.status == "open"
             ):
                 return session.model_copy(deep=True)
         return None

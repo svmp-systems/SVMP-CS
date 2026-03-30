@@ -95,7 +95,6 @@ class MongoSessionStateRepository(SessionStateRepository):
                 "tenantId": tenant_id,
                 "clientId": client_id,
                 "userId": user_id,
-                "status": "open",
             }
         )
         return _to_model(SessionState, document)

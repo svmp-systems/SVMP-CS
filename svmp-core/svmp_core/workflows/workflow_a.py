@@ -65,6 +65,7 @@ async def run_workflow_a(
         existing_session.id,
         {
             "messages": [*existing_session.messages, new_message],
+            "status": "open",
             "updated_at": current_time,
             "debounce_expires_at": debounce_expires_at,
             "processing": False,

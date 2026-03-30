@@ -41,7 +41,6 @@ class DemoSessionStateRepository(SessionStateRepository):
                 session.tenant_id == tenant_id
                 and session.client_id == client_id
                 and session.user_id == user_id
-                and session.status == "open"
             ):
                 return session.model_copy(deep=True)
         return None
@@ -267,7 +266,9 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
         assert result.similarity_score == 1.0
 
         session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
-        assert session is None
+        assert session is not None
+        assert session.status == "open"
+        assert session.processing is True
 
         written_logs = database.governance_logs.logs
         assert len(written_logs) == 1

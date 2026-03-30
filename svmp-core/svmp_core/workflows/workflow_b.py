@@ -92,36 +92,6 @@ def _fallback_domain_id(tenant_document: Mapping[str, Any] | None) -> str | None
     return None
 
 
-async def _finalize_processed_session(database: Database, session_id: str, now: datetime) -> None:
-    """Mark a processed session as closed so it is not picked up again."""
-
-    updated = await database.session_state.update_by_id(
-        session_id,
-        {
-            "status": "closed",
-            "processing": False,
-            "updated_at": now,
-        },
-    )
-    if updated is None:
-        raise DatabaseError("failed to finalize processed session")
-
-
-async def _release_session_for_retry(database: Database, session_id: str, now: datetime) -> None:
-    """Best-effort release of the processing lock after an internal failure."""
-
-    try:
-        await database.session_state.update_by_id(
-            session_id,
-            {
-                "processing": False,
-                "updated_at": now,
-            },
-        )
-    except Exception:
-        return None
-
-
 @dataclass(frozen=True)
 class WorkflowBResult:
     """Summary of a Workflow B processing run."""
@@ -193,7 +163,6 @@ async def run_workflow_b(
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
-            await _finalize_processed_session(database, acquired_session.id, current_time)
             return WorkflowBResult(
                 processed=True,
                 session_id=acquired_session.id,
@@ -236,7 +205,6 @@ async def run_workflow_b(
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
-            await _finalize_processed_session(database, acquired_session.id, current_time)
             return WorkflowBResult(
                 processed=True,
                 session_id=acquired_session.id,
@@ -270,7 +238,6 @@ async def run_workflow_b(
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
-            await _finalize_processed_session(database, acquired_session.id, current_time)
             return WorkflowBResult(
                 processed=True,
                 session_id=acquired_session.id,
@@ -301,7 +268,6 @@ async def run_workflow_b(
             timestamp=current_time,
         )
         await database.governance_logs.create(log)
-        await _finalize_processed_session(database, acquired_session.id, current_time)
         return WorkflowBResult(
             processed=True,
             session_id=acquired_session.id,
@@ -314,6 +280,4 @@ async def run_workflow_b(
             reason=escalation.reason,
         )
     except Exception as exc:
-        if acquired_session is not None and acquired_session.id is not None:
-            await _release_session_for_retry(database, acquired_session.id, current_time)
         raise DatabaseError("workflow b processing failed") from exc
