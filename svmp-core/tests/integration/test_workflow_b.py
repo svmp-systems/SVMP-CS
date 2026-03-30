@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -276,6 +277,10 @@ async def test_workflow_b_escalates_low_confidence_query() -> None:
     written_logs = database.governance_logs.logs
     assert len(written_logs) == 1
     assert written_logs[0].decision == GovernanceDecision.ESCALATED
+    session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert session is not None
+    assert session.status == "open"
+    assert session.processing is True
 
     session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
     assert session is not None

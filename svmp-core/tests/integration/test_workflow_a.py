@@ -206,6 +206,7 @@ async def test_workflow_a_appends_follow_up_message_and_resets_debounce() -> Non
     assert updated.created_at == first_now
     assert updated.updated_at == second_now
     assert updated.debounce_expires_at == second_now + timedelta(milliseconds=2500)
+    assert updated.status == "open"
     assert updated.processing is False
 
 
@@ -291,3 +292,48 @@ async def test_workflow_a_rejects_invalid_identity_fields() -> None:
             ),
             settings=_settings(),
         )
+
+
+@pytest.mark.asyncio
+async def test_workflow_a_reuses_legacy_closed_session_for_same_identity() -> None:
+    """A new inbound message should reopen a legacy closed session instead of duplicating it."""
+
+    database = InMemoryDatabase()
+    first_now = datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc)
+    second_now = first_now + timedelta(minutes=5)
+
+    first_session = await run_workflow_a(
+        database,
+        WebhookPayload(
+            tenantId="Niyomilan",
+            clientId="whatsapp",
+            userId="9845891194",
+            text="hi",
+        ),
+        settings=_settings(),
+        now=first_now,
+    )
+
+    seeded = await database.session_state.update_by_id(
+        first_session.id,
+        {"status": "closed", "processing": True},
+    )
+    assert seeded is not None
+    assert seeded.status == "closed"
+
+    updated = await run_workflow_a(
+        database,
+        WebhookPayload(
+            tenantId="Niyomilan",
+            clientId="whatsapp",
+            userId="9845891194",
+            text="back again",
+        ),
+        settings=_settings(),
+        now=second_now,
+    )
+
+    assert updated.id == first_session.id
+    assert updated.status == "open"
+    assert updated.processing is False
+    assert [message.text for message in updated.messages] == ["hi", "back again"]

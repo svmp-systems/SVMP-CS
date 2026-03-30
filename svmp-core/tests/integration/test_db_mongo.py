@@ -174,6 +174,16 @@ async def test_connect_initializes_repositories_and_indexes(monkeypatch: pytest.
     assert len(fake_db["knowledge_base"].indexes) == 1
     assert len(fake_db["governance_logs"].indexes) == 1
     assert len(fake_db["tenants"].indexes) == 1
+    assert fake_db["tenants"].indexes[0]["kwargs"] == {
+        "unique": True,
+        "name": "tenant_id_unique",
+        "partialFilterExpression": {
+            "tenantId": {
+                "$exists": True,
+                "$type": "string",
+            }
+        },
+    }
 
     await database.disconnect()
 
@@ -205,6 +215,9 @@ async def test_session_repository_round_trip_and_ready_acquisition() -> None:
     updated = await database.session_state.update_by_id(created.id, {"status": "closed"})
     assert updated is not None
     assert updated.status == "closed"
+    fetched_closed = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert fetched_closed is not None
+    assert fetched_closed.status == "closed"
 
     fetched_after_close = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
     assert fetched_after_close is not None

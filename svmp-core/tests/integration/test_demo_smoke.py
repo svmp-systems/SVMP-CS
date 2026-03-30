@@ -251,7 +251,10 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "accepted",
+            "provider": "normalized",
+            "messageCount": 1,
             "sessionId": "session-1",
+            "sessionIds": ["session-1"],
         }
 
         result = await run_workflow_b(

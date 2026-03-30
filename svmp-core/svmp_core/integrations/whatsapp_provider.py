@@ -182,7 +182,6 @@ class MetaWhatsAppProvider(WhatsAppProvider):
         for entry in raw_entries:
             if not isinstance(entry, Mapping):
                 continue
-
             changes = entry.get("changes", [])
             if not isinstance(changes, list):
                 continue
@@ -190,7 +189,6 @@ class MetaWhatsAppProvider(WhatsAppProvider):
             for change in changes:
                 if not isinstance(change, Mapping):
                     continue
-
                 value = change.get("value", {})
                 if not isinstance(value, Mapping):
                     continue

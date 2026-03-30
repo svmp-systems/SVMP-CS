@@ -174,7 +174,10 @@ def test_webhook_post_intakes_valid_payload() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "status": "accepted",
+        "provider": "normalized",
+        "messageCount": 1,
         "sessionId": "session-1",
+        "sessionIds": ["session-1"],
     }
 
 

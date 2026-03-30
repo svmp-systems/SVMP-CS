@@ -77,7 +77,6 @@ class Settings(BaseSettings):
             missing.append("MONGODB_URI")
         if self.OPENAI_API_KEY is None or _normalized_secret(self.OPENAI_API_KEY) is None:
             missing.append("OPENAI_API_KEY")
-
         provider = self.WHATSAPP_PROVIDER.strip().lower()
         if provider == "meta":
             if self.WHATSAPP_TOKEN is None or _normalized_secret(self.WHATSAPP_TOKEN) is None:

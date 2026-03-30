@@ -95,6 +95,20 @@ class MongoKnowledgeSeedWriter:
         """Replace or insert knowledge entries using stable keys."""
 
         written = 0
+        seeded_domains = {
+            (entry.tenant_id, entry.domain_id)
+            for entry in entries
+        }
+
+        # Reset each seeded tenant/domain slice so legacy demo documents do not
+        # survive alongside the current sample corpus.
+        for tenant_id, domain_id in seeded_domains:
+            await self._collection.delete_many(
+                {
+                    "tenantId": tenant_id,
+                    "domainId": domain_id,
+                }
+            )
 
         for entry in entries:
             payload = entry.model_dump(by_alias=True, exclude_none=True)
