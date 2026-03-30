@@ -160,6 +160,10 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         APP_NAME="SVMP-Test",
+        MONGODB_URI="mongodb://unit-test",
+        OPENAI_API_KEY="test-key",
+        WHATSAPP_TOKEN="test-whatsapp-token",
+        WHATSAPP_PHONE_NUMBER_ID="1234567890",
         WHATSAPP_VERIFY_TOKEN="verify-me",
         WORKFLOW_B_INTERVAL_SECONDS=1,
         WORKFLOW_C_INTERVAL_HOURS=24,

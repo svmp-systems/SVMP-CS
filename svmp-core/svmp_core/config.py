@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: SecretStr | None = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     LLM_MODEL: str = "gpt-4o-mini"
+    USE_OPENAI_MATCHER: bool = False
+    OPENAI_SHADOW_MODE: bool = False
+    OPENAI_MATCHER_CANDIDATE_LIMIT: int = 8
 
     WHATSAPP_TOKEN: SecretStr | None = None
     WHATSAPP_PHONE_NUMBER_ID: str | None = None

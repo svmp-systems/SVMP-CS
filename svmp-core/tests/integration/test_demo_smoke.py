@@ -217,6 +217,10 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         APP_NAME="SVMP-Smoke",
+        MONGODB_URI="mongodb://unit-test",
+        OPENAI_API_KEY="test-key",
+        WHATSAPP_TOKEN="test-whatsapp-token",
+        WHATSAPP_PHONE_NUMBER_ID="1234567890",
         WHATSAPP_VERIFY_TOKEN="verify-me",
         DEBOUNCE_MS=0,
         SIMILARITY_THRESHOLD=0.75,

@@ -291,3 +291,102 @@ async def test_workflow_b_wraps_internal_failures_and_releases_session() -> None
     session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
     assert session is not None
     assert session.processing is False
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_runs_openai_matcher_in_shadow_mode_without_overriding_decision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shadow mode should record the OpenAI comparison while keeping deterministic authority."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.18, "reason": "weak faq match"}'
+
+    monkeypatch.setattr(
+        "svmp_core.workflows.workflow_b.generate_completion",
+        fake_generate_completion,
+    )
+
+    database = ProcessingDatabase(
+        sessions=[_ready_session(text="What do you do?")],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="What do you do?",
+                answer="We help customers.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, OPENAI_SHADOW_MODE=True),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.processed is True
+    assert result.decision == GovernanceDecision.ANSWERED
+    assert result.matcher_used == "deterministic"
+
+    written_logs = database.governance_logs.logs
+    assert len(written_logs) == 1
+    comparison = written_logs[0].metadata["matcherComparison"]
+    assert written_logs[0].metadata["matcherMode"] == "shadow"
+    assert comparison["deterministic"]["matcher"] == "deterministic"
+    assert comparison["openai"]["matcher"] == "openai"
+    assert comparison["openai"]["score"] == pytest.approx(0.18)
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_can_use_openai_matcher_authoritatively(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When enabled, the OpenAI matcher should become the authoritative scorer."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    monkeypatch.setattr(
+        "svmp_core.workflows.workflow_b.generate_completion",
+        fake_generate_completion,
+    )
+
+    database = ProcessingDatabase(
+        sessions=[_ready_session(text="Can you tell me your weekday opening hours?")],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="What do you do?",
+                answer="We help customers.",
+            ),
+            KnowledgeEntry(
+                _id="faq-2",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="Business opening times",
+                answer="We are open from 9 AM to 6 PM on weekdays.",
+            ),
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, USE_OPENAI_MATCHER=True),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.processed is True
+    assert result.decision == GovernanceDecision.ANSWERED
+    assert result.matcher_used == "openai"
+    assert result.answer_supplied == "We are open from 9 AM to 6 PM on weekdays."
+
+    written_logs = database.governance_logs.logs
+    assert len(written_logs) == 1
+    assert written_logs[0].metadata["matcherMode"] == "openai"
+    assert written_logs[0].metadata["matcherUsed"] == "openai"
