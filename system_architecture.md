@@ -2,16 +2,17 @@
 
 ## Purpose
 
-SVMP is a governance and orchestration backend for AI-assisted customer support. The current implementation is a Mongo-first FastAPI service that:
+SVMP is a Mongo-backed FastAPI orchestration service for AI-assisted customer support. In the current repo state, it:
 
-- ingests inbound customer messages
-- buffers fragmented messages into a session
+- accepts inbound WhatsApp messages through a provider-aware webhook layer
+- buffers fragmented customer input into a tenant-scoped session
 - processes ready sessions on a scheduler
-- retrieves tenant-scoped knowledge
-- answers safely or escalates
-- records a governance trail for every decision
+- retrieves tenant-scoped FAQ knowledge from MongoDB
+- decides whether to answer or escalate
+- writes a governance log for each decision
+- sends answered responses back out through the active WhatsApp provider
 
-This document describes the system as it exists in the codebase today.
+This document reflects the code as it exists in the repository right now.
 
 ## Repository Structure
 
@@ -22,19 +23,19 @@ The active product code lives here.
 - `svmp_core/main.py`
   FastAPI app factory, startup lifecycle, scheduler registration
 - `svmp_core/config.py`
-  environment-backed runtime settings and fail-fast validation
+  env-backed settings and fail-fast validation
 - `svmp_core/routes/`
   HTTP entrypoints, currently centered on `/webhook`
 - `svmp_core/workflows/`
   Workflow A, Workflow B, Workflow C
 - `svmp_core/models/`
-  typed internal models for webhook payloads, sessions, KB entries, and governance logs
+  typed models for webhook payloads, sessions, KB entries, governance logs, and outbound sends
 - `svmp_core/core/`
-  deterministic decision helpers for intent, domain routing, similarity, escalation, and governance log building
+  deterministic helpers for intent routing, domain routing, similarity evaluation, escalation, and governance log construction
 - `svmp_core/db/`
-  database interfaces and Mongo implementation
+  persistence contracts and Mongo implementation
 - `svmp_core/integrations/`
-  OpenAI client wrapper and WhatsApp provider abstraction
+  OpenAI client wrapper plus WhatsApp provider adapters
 
 ### `scripts/`
 
@@ -48,25 +49,24 @@ Operational/demo scripts.
 
 ### `svmp-platform/`
 
-Reserved for a future platform/SaaS wrapper. It is not the active implementation path right now.
+Reserved for a future platform/SaaS layer. It is not the active implementation path.
 
 ## Architecture Summary
 
 ```mermaid
 flowchart TD
     A["Inbound Message"] --> B["/webhook"]
-    B --> C["WhatsApp Provider Normalization"]
+    B --> C["Provider Resolution + Normalization"]
     C --> D["Workflow A"]
     D --> E["session_state"]
     F["APScheduler"] --> G["Workflow B"]
     E --> G
     H["tenants"] --> G
     I["knowledge_base"] --> G
-    J["OpenAI (optional / shadow)"] --> G
+    G --> J["Provider send_text() on answered result"]
     G --> K["governance_logs"]
     F --> L["Workflow C"]
     E --> L
-    L --> K
 ```
 
 ## Runtime Components
@@ -77,8 +77,8 @@ flowchart TD
 
 Startup behavior:
 
-- loads cached settings from `.env`
-- calls `validate_runtime()` and fails fast if required configuration is missing
+- loads settings from the repo-root `.env`
+- calls `validate_runtime()` and fails fast if required values are missing
 - configures logging
 - connects MongoDB
 - registers scheduler jobs for Workflow B and Workflow C
@@ -101,7 +101,7 @@ Registered jobs:
 - Workflow C
   interval job, default every `24` hours
 
-These jobs are registered only once at boot and shut down with the app lifecycle.
+These jobs are registered once at boot and shut down with the app lifecycle.
 
 ## Environment and Runtime Contract
 
@@ -132,12 +132,21 @@ Settings are defined in `svmp_core/config.py` and loaded from the repo-root `.en
 - `OPENAI_SHADOW_MODE`
 - `OPENAI_MATCHER_CANDIDATE_LIMIT`
 
+Important current-state note:
+
+- these settings exist in config
+- the OpenAI client wrapper exists
+- but the current `workflow_b.py` on this branch is deterministic and does not use the OpenAI matcher path
+
 ### WhatsApp Settings
 
 - `WHATSAPP_PROVIDER`
 - `WHATSAPP_TOKEN`
 - `WHATSAPP_PHONE_NUMBER_ID`
 - `WHATSAPP_VERIFY_TOKEN`
+- `TWILIO_ACCOUNT_SID`
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_WHATSAPP_NUMBER`
 
 ### Workflow Settings
 
@@ -156,8 +165,16 @@ Startup currently requires:
   - `WHATSAPP_TOKEN`
   - `WHATSAPP_PHONE_NUMBER_ID`
   - `WHATSAPP_VERIFY_TOKEN`
+- if `WHATSAPP_PROVIDER=twilio`:
+  - `TWILIO_ACCOUNT_SID`
+  - `TWILIO_AUTH_TOKEN`
+  - `TWILIO_WHATSAPP_NUMBER`
 
-If `WHATSAPP_PROVIDER` is anything other than `meta` or `normalized`, startup fails.
+Allowed providers:
+
+- `meta`
+- `twilio`
+- `normalized`
 
 ## Messaging and Provider Layer
 
@@ -165,27 +182,27 @@ If `WHATSAPP_PROVIDER` is anything other than `meta` or `normalized`, startup fa
 
 The provider interface is implemented in `svmp_core/integrations/whatsapp_provider.py`.
 
-Current providers on this branch:
+Current providers:
 
 - `normalized`
-  accepts already-normalized internal webhook payloads
+  accepts already-normalized internal webhook payloads and simulates outbound sends
 - `meta`
-  accepts raw Meta WhatsApp Business webhook JSON
+  accepts raw Meta WhatsApp Business webhook JSON and sends outbound messages through the Graph API
+- `twilio`
+  accepts Twilio `application/x-www-form-urlencoded` webhook posts and sends outbound messages through the Twilio Messages API
 
-There is also a normalized outbound interface:
+Normalized outbound models:
 
 - `OutboundTextMessage`
 - `OutboundSendResult`
 
-The Meta provider already has an outbound `send_text()` implementation using the Graph API. The current branch focuses on inbound normalization and runtime wiring; full live outbound verification is still a separate operational step.
-
 ## Webhook Route Behavior
 
-`POST /webhook` now supports two input shapes:
+`POST /webhook` supports three effective intake modes:
 
 ### Normalized JSON
 
-Used for local testing and internal smoke verification.
+Used for local testing and smoke verification.
 
 Example:
 
@@ -200,7 +217,7 @@ Example:
 
 ### Meta WhatsApp Webhook JSON
 
-Used for provider-native ingestion.
+Used for provider-native Meta ingestion.
 
 Important:
 
@@ -209,15 +226,39 @@ Important:
   - `X-SVMP-Tenant-Id`
   - or `?tenantId=...`
 
-The route normalizes Meta messages into the internal `WebhookPayload` shape before Workflow A.
+### Twilio Form Payload
+
+Used for provider-native Twilio sandbox/live ingestion.
+
+Important:
+
+- Twilio payloads also do not auto-resolve tenant yet
+- requests therefore require:
+  - `X-SVMP-Tenant-Id`
+  - or `?tenantId=...`
+- in practice, the Twilio sandbox webhook is configured with:
+  - `/webhook?tenantId=<tenant>&provider=twilio`
 
 ### Verification
 
-`GET /webhook` supports Meta webhook verification using:
+`GET /webhook` supports provider verification only where the provider implements it:
 
-- `hub.mode`
-- `hub.verify_token`
-- `hub.challenge`
+- Meta verification uses:
+  - `hub.mode`
+  - `hub.verify_token`
+  - `hub.challenge`
+- Twilio does not use this GET verification path and returns `405`
+
+### Current Response Shape
+
+Successful webhook intake currently returns:
+
+```json
+{
+  "status": "accepted",
+  "sessionId": "..."
+}
+```
 
 ## Current Inbound Schema
 
@@ -229,23 +270,23 @@ The route normalizes Meta messages into the internal `WebhookPayload` shape befo
   "clientId": "whatsapp",
   "userId": "9845891194",
   "text": "What does Niyomilan do?",
-  "provider": "meta",
-  "externalMessageId": "wamid..."
+  "provider": "twilio",
+  "externalMessageId": "SM..."
 }
 ```
 
 Field notes:
 
 - `tenantId`
-  real company identifier
+  company / tenant identifier
 - `clientId`
-  source/channel identifier, currently typically `whatsapp`
+  source channel identifier, currently typically `whatsapp`
 - `userId`
   source-native end user identifier
 - `provider`
-  normalized source path such as `normalized` or `meta`
+  source path such as `normalized`, `meta`, or `twilio`
 - `externalMessageId`
-  provider-native message identifier when available
+  provider-native message id when available
 
 ## Core Workflows
 
@@ -256,49 +297,72 @@ Implemented in `svmp_core/workflows/workflow_a.py`.
 Purpose:
 
 - accept a normalized inbound message
-- locate the active open session by `tenantId + clientId + userId`
-- append the new message
+- locate the identity session by `tenantId + clientId + userId`
+- create or update that session
+- append the message
 - reset debounce timing
+- clear the processing latch
 
 Behavior:
 
 - trims and validates message text
 - converts the inbound payload into an `IdentityFrame`
-- creates a new `SessionState` if no active session exists
-- otherwise appends the message to the existing session
+- creates a new `SessionState` if no identity session exists
+- otherwise appends the message to the existing identity session
+- forces `status = "open"`
 - resets `debounceExpiresAt = now + DEBOUNCE_MS`
 - forces `processing = false`
 
-This is the buffering layer that collapses fragmented chat messages into one later processing unit.
+This is the buffering layer that collapses fragmented chat input into one later processing unit.
 
-## Workflow B: Process and Decide
+## Workflow B: Process, Decide, and Send
 
 Implemented in `svmp_core/workflows/workflow_b.py`.
 
 Purpose:
 
-- acquire one ready session
-- merge messages into `combinedText`
+- acquire one ready session atomically
+- merge buffered messages into `combinedText`
 - determine whether the system can answer safely
+- send the answer through the active WhatsApp provider when one is available
 - write an immutable governance log
-- close the processed session
 
 High-level pipeline:
 
-1. Acquire one ready session atomically.
-2. Build `combinedText` from buffered fragments.
-3. Load tenant metadata.
-4. Infer intent.
-5. Resolve domain.
-6. Load active KB entries for the tenant/domain.
-7. Run the matcher.
-8. Apply the similarity gate.
-9. Write `answered` or `escalated` governance log.
-10. Close the session.
+1. Acquire one ready session where:
+   - `status = open`
+   - `processing = false`
+   - `debounceExpiresAt <= now`
+2. Atomically flip `processing = true`.
+3. Build `combinedText` from buffered fragments.
+4. Load tenant metadata.
+5. Infer intent.
+6. Resolve domain.
+7. Load active KB entries for the tenant/domain.
+8. Run deterministic FAQ matching.
+9. Apply the similarity gate.
+10. If answered:
+    - send the answer through the active provider
+    - write an answered governance log with delivery metadata
+11. If not answered:
+    - write an escalated governance log
+
+### Atomic Locking and Session Lifecycle
+
+Current session state machine:
+
+- Workflow A sets `processing = false` whenever new input arrives
+- Workflow B acquires one ready session and sets `processing = true`
+- Workflow B does not clear the latch after processing
+- Workflow B does not close the session
+- the next inbound message through Workflow A reopens that identity session for processing by setting `processing = false`
+- Workflow C is the only cleanup path
+
+This means the same identity session is reused across messages instead of create-close-create cycling.
 
 ### Intent Routing
 
-Intent classification is currently deterministic and keyword-based:
+Intent classification is deterministic and keyword-based:
 
 - `informational`
 - `transactional`
@@ -319,33 +383,9 @@ If no explicit match is found, Workflow B may fall back to the first valid tenan
 
 ### Matching Strategy
 
-The system currently supports two matchers:
+The current `workflow_b.py` on this branch uses a deterministic token-overlap FAQ matcher.
 
-- deterministic baseline matcher
-- OpenAI matcher
-
-#### Deterministic Baseline
-
-The baseline matcher uses token overlap between the query and FAQ question text.
-
-This is still the safe default authoritative matcher for the current demo path.
-
-#### OpenAI Matcher
-
-The OpenAI matcher ranks a limited candidate set and asks the configured model to return JSON with:
-
-- `bestIndex`
-- `similarityScore`
-- `reason`
-
-Supported runtime modes:
-
-- `USE_OPENAI_MATCHER=false` and `OPENAI_SHADOW_MODE=true`
-  OpenAI runs only for comparison; deterministic remains authoritative
-- `USE_OPENAI_MATCHER=true`
-  OpenAI becomes authoritative when the call succeeds
-
-If OpenAI fails, Workflow B falls back cleanly to deterministic matching and records the failure in governance metadata.
+It compares query tokens against FAQ question tokens and selects the strongest match.
 
 ### Similarity Gate
 
@@ -360,16 +400,36 @@ Threshold resolution:
 - prefer `tenants.settings.confidenceThreshold`
 - fall back to global `SIMILARITY_THRESHOLD`
 
+### Outbound Send Behavior
+
+When Workflow B answers:
+
+- it resolves the active provider from `WHATSAPP_PROVIDER`
+- builds an `OutboundTextMessage`
+- calls provider `send_text()`
+- stores delivery metadata in the answered governance log
+
+If the outbound provider call fails:
+
+- Workflow B raises
+- the processing latch remains set
+- new inbound input through Workflow A is required to reset `processing = false`
+
 ## Workflow C: Cleanup
 
 Implemented in `svmp_core/workflows/workflow_c.py`.
 
 Purpose:
 
-- remove stale sessions
-- optionally write closure governance logs for sessions that can be enumerated
+- identify stale sessions when the repository supports stale-session listing
+- optionally write closure governance logs
+- delete stale sessions
 
-The Mongo implementation currently supports deletion of stale sessions and the workflow is wired on a 24-hour interval.
+Important current-state note:
+
+- the workflow supports closure-log creation when `list_stale_sessions()` exists
+- the Mongo repository currently exposes deletion but not stale-session enumeration
+- so in the Mongo runtime today, stale sessions are deleted but closure logs are not written by default
 
 ## Data Model and Schemas
 
@@ -396,6 +456,11 @@ Mutable active conversation state.
   "debounceExpiresAt": "ISODate"
 }
 ```
+
+Notes:
+
+- identity is unique on `tenantId + clientId + userId`
+- the same identity doc is reused across inbound messages
 
 ## `knowledge_base`
 
@@ -456,17 +521,23 @@ Immutable audit trail.
   "combinedText": "What does Niyomilan do?",
   "answerSupplied": "Niyomilan helps businesses automate tier-1 customer support across channels like WhatsApp.",
   "timestamp": "ISODate",
-  "metadata": {}
+  "metadata": {
+    "domainId": "general",
+    "delivery": {
+      "provider": "twilio",
+      "status": "accepted",
+      "externalMessageId": "SM..."
+    }
+  }
 }
 ```
 
-`metadata` is intentionally extensible. Current Workflow B metadata can include:
+`metadata` is intentionally extensible. In the current answered flow it includes:
 
 - `domainId`
-- `matcherMode`
-- `matcherUsed`
-- `matcherComparison.deterministic`
-- `matcherComparison.openai`
+- `delivery.provider`
+- `delivery.status`
+- `delivery.externalMessageId`
 
 ## MongoDB Persistence and Indexes
 
@@ -503,109 +574,127 @@ Loads `sample_tenant.json` and upserts the demo tenant.
 
 ### `scripts/seed_knowledge_base.py`
 
-Loads `sample_kb.json` and reseeds the tenant/domain slice before inserting the current demo entries. This keeps old malformed demo rows from lingering in Atlas and breaking Workflow B.
+Loads `sample_kb.json` and resets each seeded tenant/domain slice before inserting the current sample corpus. This prevents stale malformed demo rows from lingering in Atlas and breaking Workflow B.
 
 ## Live Verification Script
 
 ### `scripts/verify_live_runtime.py`
 
-This script performs a real-stack smoke check:
+This script exists to perform a real-stack Workflow A/B check against the configured runtime.
 
-1. loads settings
-2. connects Mongo
-3. runs Workflow A with a sample inbound payload
-4. runs Workflow B against the stored session
-5. prints:
-   - session id
-   - Workflow B result
-   - latest governance log
+Important current-state note:
 
-This is the best current end-to-end verification path short of a live Meta webhook callback.
+- the script is present in the repo
+- but its printed result contract is behind current `WorkflowBResult`
+- it still references matcher-oriented fields that are not on the current deterministic Workflow B result
+
+So the script should be treated as implementation drift that needs refresh before it is relied on again.
 
 ## Current Feature Set
 
 - Mongo-first persistence
-- fail-fast environment validation
+- fail-fast env validation
 - provider-aware webhook intake
 - normalized internal inbound schema
 - Meta webhook verification
+- Meta outbound send support
+- Twilio inbound webhook normalization
+- Twilio outbound send support
 - tenant-scoped session buffering
 - deterministic intent routing
 - deterministic domain routing
 - deterministic FAQ matching
-- OpenAI matcher in shadow or authoritative mode
+- outbound reply sending for answered results
 - immutable governance logging
-- repeatable demo seed scripts
-- automated tests across config, app boot, DB adapter, workflows, webhook route, and smoke paths
+- repeatable tenant and KB seed scripts
+- automated tests across config, app boot, DB adapter, workflows, webhook route, provider adapters, and smoke flows
 
 ## Current Operational Status
 
-Verified in the current build:
+Verified in the current branch/runtime:
 
-- automated test suite for the implemented scope
-- Atlas-backed tenant and KB seeding
-- live Workflow A to Workflow B to governance flow
-- deterministic answering path
-- OpenAI fallback behavior when the API key is absent
+- automated tests for the implemented scope
+- Atlas-backed tenant seeding
+- Atlas-backed KB seeding
+- live Workflow A to Workflow B processing
+- live Twilio Sandbox inbound webhook delivery
+- live deterministic answer selection
+- live outbound Twilio WhatsApp reply delivery
+- atomic session lock behavior with repeated inbound messages from the same user
 
-Not fully verified in the current branch/runtime yet:
+Not fully verified in the current repo state:
 
-- live OpenAI matcher with a configured real API key
-- live Meta webhook delivery from Meta infrastructure into the running service
-- full production-grade outbound WhatsApp send loop
+- live Meta outbound/inbound verification against Meta infrastructure
+- OpenAI-driven matching inside the current `workflow_b.py`
+- automatic tenant resolution from provider account / sender mapping
 
 ## Known Constraints and Design Gaps
 
-### Tenant Resolution At Ingress
+### Tenant Resolution at Ingress
 
-The core system is tenant-aware, but provider-native webhook requests do not auto-resolve tenant identity yet.
+The core logic is tenant-aware, but provider-native webhook requests do not auto-resolve tenant identity yet.
 
 Current behavior:
 
 - normalized internal payloads include `tenantId`
 - Meta-native payloads require `X-SVMP-Tenant-Id` or `?tenantId=...`
+- Twilio-native payloads also require `X-SVMP-Tenant-Id` or `?tenantId=...`
 
-This is acceptable for demoing and local verification, but a production multi-tenant ingress layer should derive tenant from provider account or phone-number mapping instead of requiring a manual header.
+This is acceptable for demos and local verification, but a production multi-tenant ingress layer should derive tenant from provider account or phone-number mapping.
 
-### Matching Maturity
+### OpenAI Drift
 
-The deterministic matcher is intentionally simple and safe. It is suitable for the current demo path but is not the final retrieval strategy.
+The repo still contains:
 
-The OpenAI matcher is already integrated behind flags, which allows:
+- OpenAI settings
+- the OpenAI integration wrapper
+- matcher-related config flags
 
-- shadow comparison before rollout
-- controlled switchover to model authority
-- safe fallback on failure
+But the current `workflow_b.py` on this branch is deterministic-only. So the configuration surface is ahead of the active runtime implementation.
 
-### Legacy Data Tolerance
+### Outbound Failure Handling
 
-The recent live verification surfaced two real-world hardening needs that are now accounted for:
+Answered outbound sends are now part of Workflow B.
 
-- tenant unique index ignores legacy docs missing `tenantId`
-- KB seeding replaces the seeded tenant/domain slice so malformed legacy demo data does not poison runtime reads
+Current behavior:
+
+- successful sends are recorded in governance metadata
+- failed sends raise and bubble through Workflow B
+- the processing latch stays set until new inbound input arrives
+
+That is consistent with the current lock model, but operationally it means outbound failures can leave a session latched until the next user message.
+
+### Stale-Session Cleanup Logging
+
+Workflow C can write closure logs only when stale sessions can be enumerated before deletion.
+
+The Mongo adapter currently supports deletion but not stale-session listing, so stale Mongo sessions are cleaned up without detailed closure-log generation.
 
 ## Recommended Verification Sequence
 
 1. Run automated tests.
 2. Seed tenant data.
 3. Seed knowledge-base data.
-4. Run `verify_live_runtime.py`.
-5. Start the app with `uvicorn`.
-6. Verify Meta webhook challenge.
-7. Send a normalized local webhook request.
-8. Send a Meta-style webhook payload.
-9. Inspect Mongo collections and governance metadata.
+4. Start the app with `uvicorn`.
+5. Verify a normalized local webhook request.
+6. Verify a Meta-style payload if needed.
+7. For Twilio demo verification:
+   - start a public tunnel
+   - point Twilio Sandbox webhook to `/webhook?tenantId=<tenant>&provider=twilio`
+   - send a WhatsApp message from a sandbox-joined phone
+8. Confirm session state and governance logs in Mongo.
+9. Confirm the answer is delivered back to WhatsApp when the query is answered.
 
 ## Summary
 
-SVMP is currently a working Mongo-backed orchestration core for customer-support automation. The implementation is no longer just scaffolding: it has a real env contract, a real database adapter, a live webhook surface, a provider abstraction, scheduled processing workflows, repeatable demo data seeding, and a governance trail.
+SVMP is currently a working Mongo-backed orchestration core for customer-support automation with a provider-aware webhook layer and a live Twilio sandbox demo path.
 
 The current branch is best described as:
 
 - code-first
 - Mongo-first
-- Meta WhatsApp capable
-- deterministic by default
-- OpenAI shadow-capable
+- deterministic in Workflow B
+- provider-aware for normalized, Meta, and Twilio intake
+- capable of outbound WhatsApp replies through Meta or Twilio providers
 - tenant-aware in core logic
-- still awaiting fully automatic tenant resolution and complete live external-integration verification
+- still awaiting automatic tenant resolution and a cleanup pass on stale OpenAI-era config/script drift
