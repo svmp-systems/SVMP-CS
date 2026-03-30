@@ -160,6 +160,11 @@ def _settings() -> Settings:
     return Settings(
         _env_file=None,
         APP_NAME="SVMP-Test",
+        MONGODB_URI="mongodb://unit-test",
+        OPENAI_API_KEY="test-key",
+        WHATSAPP_PROVIDER="meta",
+        WHATSAPP_TOKEN="test-whatsapp-token",
+        WHATSAPP_PHONE_NUMBER_ID="1234567890",
         WHATSAPP_VERIFY_TOKEN="verify-me",
         WORKFLOW_B_INTERVAL_SECONDS=1,
         WORKFLOW_C_INTERVAL_HOURS=24,
@@ -204,3 +209,35 @@ def test_create_app_registers_webhook_route() -> None:
 
         assert response.status_code == 200
         assert response.text == "12345"
+
+
+def test_create_app_boots_with_twilio_runtime_settings() -> None:
+    """Twilio provider settings should also satisfy runtime startup validation."""
+
+    database = TestDatabase()
+    scheduler = SchedulerStub()
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Twilio-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="twilio",
+            TWILIO_ACCOUNT_SID="AC123",
+            TWILIO_AUTH_TOKEN="secret",
+            TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=database,
+        scheduler=scheduler,
+    )
+
+    with TestClient(app) as client:
+        response = client.get("/health")
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
+        assert database.connected is True
+
+    assert database.disconnected is True

@@ -301,4 +301,10 @@ class MongoDatabase(Database):
             [("tenantId", ASCENDING)],
             unique=True,
             name="tenant_id_unique",
+            partialFilterExpression={
+                "tenantId": {
+                    "$exists": True,
+                    "$type": "string",
+                }
+            },
         )

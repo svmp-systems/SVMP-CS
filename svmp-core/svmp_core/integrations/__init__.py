@@ -6,10 +6,24 @@ from svmp_core.integrations.openai_client import (
     generate_completion,
     get_openai_client,
 )
+from svmp_core.integrations.whatsapp_provider import (
+    MetaWhatsAppProvider,
+    NormalizedWhatsAppProvider,
+    TwilioWhatsAppProvider,
+    WhatsAppProvider,
+    get_whatsapp_provider,
+    is_normalized_payload,
+)
 
 __all__ = [
     "clear_openai_client_cache",
     "embed_text",
     "generate_completion",
     "get_openai_client",
+    "WhatsAppProvider",
+    "NormalizedWhatsAppProvider",
+    "MetaWhatsAppProvider",
+    "TwilioWhatsAppProvider",
+    "get_whatsapp_provider",
+    "is_normalized_payload",
 ]

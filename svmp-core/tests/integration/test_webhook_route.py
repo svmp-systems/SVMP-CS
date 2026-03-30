@@ -158,7 +158,7 @@ def test_webhook_get_verification_returns_challenge() -> None:
 
 
 def test_webhook_post_intakes_valid_payload() -> None:
-    """POST webhook intake should create a session via Workflow A."""
+    """POST webhook intake should accept already-normalized payloads."""
 
     client = _build_client()
 
@@ -180,7 +180,7 @@ def test_webhook_post_intakes_valid_payload() -> None:
 
 
 def test_webhook_post_rejects_malformed_payload() -> None:
-    """Malformed payloads should fail validation at the route boundary."""
+    """Malformed normalized payloads should fail validation at the route boundary."""
 
     client = _build_client()
 
@@ -193,4 +193,99 @@ def test_webhook_post_rejects_malformed_payload() -> None:
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid normalized webhook payload"}
+
+
+def test_webhook_post_normalizes_meta_payload() -> None:
+    """Meta webhook JSON should normalize into the internal inbound schema."""
+
+    client = _build_client()
+
+    response = client.post(
+        "/webhook",
+        headers={"X-SVMP-Tenant-Id": "Niyomilan", "X-SVMP-Provider": "meta"},
+        json={
+            "object": "whatsapp_business_account",
+            "entry": [
+                {
+                    "changes": [
+                        {
+                            "value": {
+                                "messages": [
+                                    {
+                                        "id": "wamid.HBgM123",
+                                        "from": "919845891194",
+                                        "text": {"body": "hello from meta"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "accepted",
+        "sessionId": "session-1",
+    }
+
+
+def test_webhook_post_normalizes_twilio_form_payload() -> None:
+    """Twilio form posts should normalize into the internal inbound schema."""
+
+    client = _build_client()
+
+    response = client.post(
+        "/webhook",
+        headers={"X-SVMP-Tenant-Id": "Niyomilan", "X-SVMP-Provider": "twilio"},
+        data={
+            "MessageSid": "SM123",
+            "From": "whatsapp:+919845891194",
+            "Body": "hello from twilio",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "accepted",
+        "sessionId": "session-1",
+    }
+
+
+def test_webhook_post_rejects_provider_payload_without_tenant() -> None:
+    """Provider-native payloads should require an explicit tenant identity."""
+
+    client = _build_client()
+
+    response = client.post(
+        "/webhook",
+        headers={"X-SVMP-Provider": "twilio"},
+        data={
+            "MessageSid": "SM123",
+            "From": "whatsapp:+919845891194",
+            "Body": "hello from twilio",
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "tenantId is required"}
+
+
+def test_webhook_get_returns_405_for_twilio_provider() -> None:
+    """GET verification should only work for providers that support it."""
+
+    client = _build_client()
+
+    response = client.get(
+        "/webhook",
+        params={"provider": "twilio"},
+    )
+
+    assert response.status_code == 405
+    assert response.json() == {
+        "detail": "webhook verification is not supported for provider: twilio"
+    }
