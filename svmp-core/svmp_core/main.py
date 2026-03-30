@@ -72,6 +72,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        runtime_settings.validate_runtime()
         configure_logging()
         await runtime_database.connect()
         _register_scheduler_jobs(runtime_scheduler, runtime_database, runtime_settings)
