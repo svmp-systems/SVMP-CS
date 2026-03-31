@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from json import JSONDecodeError
+from typing import Any
 from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request, Response, status
@@ -27,6 +28,52 @@ def build_webhook_router(
 
     def _http_400(detail: str) -> HTTPException:
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
+
+    def _non_blank(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        normalized = value.strip()
+        return normalized or None
+
+    def _extract_provider_identities(
+        provider_name: str,
+        payload: Mapping[str, Any],
+    ) -> list[str]:
+        identities: list[str] = []
+
+        if provider_name == "twilio":
+            for key in ("To", "AccountSid"):
+                value = _non_blank(payload.get(key))
+                if value is not None:
+                    identities.append(value)
+            return identities
+
+        if provider_name == "meta":
+            raw_entries = payload.get("entry", [])
+            if not isinstance(raw_entries, list):
+                return identities
+
+            for entry in raw_entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                changes = entry.get("changes", [])
+                if not isinstance(changes, list):
+                    continue
+                for change in changes:
+                    if not isinstance(change, Mapping):
+                        continue
+                    value = change.get("value", {})
+                    if not isinstance(value, Mapping):
+                        continue
+                    metadata = value.get("metadata", {})
+                    if not isinstance(metadata, Mapping):
+                        continue
+                    for key in ("phone_number_id", "display_phone_number"):
+                        candidate = _non_blank(metadata.get(key))
+                        if candidate is not None:
+                            identities.append(candidate)
+
+        return identities
 
     @router.get("/webhook")
     async def verify_webhook(
@@ -88,6 +135,15 @@ def build_webhook_router(
                 payload=raw_payload if isinstance(raw_payload, Mapping) else None,
                 content_type=content_type,
             )
+
+            if resolved_tenant_id is None and provider.name != "normalized":
+                identities = _extract_provider_identities(provider.name, raw_payload)
+                resolved_tenant_id = await database.tenants.resolve_tenant_id_for_provider(
+                    provider=provider.name,
+                    identities=identities,
+                )
+                if resolved_tenant_id is None:
+                    raise ValidationError("tenantId could not be resolved from provider payload")
 
             if content_type is not None and "application/x-www-form-urlencoded" in content_type.lower():
                 payloads = provider.normalize_form_payload(

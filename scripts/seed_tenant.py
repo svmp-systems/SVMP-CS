@@ -35,6 +35,7 @@ class TenantSeedSpec(BaseModel):
     domains: list[dict[str, Any]]
     settings: dict[str, Any] = Field(default_factory=dict)
     tags: list[str] = Field(default_factory=list)
+    channels: dict[str, Any] = Field(default_factory=dict)
     contact_info: dict[str, Any] = Field(default_factory=dict, alias="contactInfo")
 
     @field_validator("tenant_id")

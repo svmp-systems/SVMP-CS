@@ -159,6 +159,7 @@ async def test_workflow_a_creates_a_new_session_for_first_message() -> None:
     assert session.debounce_expires_at == now + timedelta(milliseconds=2500)
     assert session.provider == "normalized"
     assert session.processing is False
+    assert session.provider == "normalized"
 
 
 @pytest.mark.asyncio
@@ -345,26 +346,26 @@ async def test_workflow_a_reuses_legacy_closed_session_for_same_identity() -> No
 
 @pytest.mark.asyncio
 async def test_workflow_a_updates_provider_from_new_inbound_channel() -> None:
-    """New inbound input should refresh the session provider used for outbound replies."""
+    """New input should refresh the persisted provider on the reused session."""
 
     database = InMemoryDatabase()
     first_now = datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc)
-    second_now = first_now + timedelta(seconds=4)
+    second_now = first_now + timedelta(minutes=1)
 
-    first_session = await run_workflow_a(
+    created = await run_workflow_a(
         database,
         WebhookPayload(
             tenantId="Niyomilan",
             clientId="whatsapp",
             userId="9845891194",
-            text="hello from twilio",
+            text="hi",
             provider="twilio",
         ),
         settings=_settings(),
         now=first_now,
     )
 
-    assert first_session.provider == "twilio"
+    assert created.provider == "twilio"
 
     updated = await run_workflow_a(
         database,
@@ -372,12 +373,12 @@ async def test_workflow_a_updates_provider_from_new_inbound_channel() -> None:
             tenantId="Niyomilan",
             clientId="whatsapp",
             userId="9845891194",
-            text="hello from meta",
+            text="hello again",
             provider="meta",
         ),
         settings=_settings(),
         now=second_now,
     )
 
-    assert updated.id == first_session.id
+    assert updated.id == created.id
     assert updated.provider == "meta"

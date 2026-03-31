@@ -189,6 +189,52 @@ class MongoTenantRepository(TenantRepository):
             normalized["_id"] = _serialize_id(normalized["_id"])
         return normalized
 
+    async def resolve_tenant_id_for_provider(
+        self,
+        *,
+        provider: str,
+        identities: Sequence[str],
+    ) -> str | None:
+        normalized_identities = [identity.strip() for identity in identities if isinstance(identity, str) and identity.strip()]
+        if not normalized_identities:
+            return None
+
+        field_map = {
+            "meta": [
+                "channels.meta.phoneNumberIds",
+                "channels.meta.displayNumbers",
+            ],
+            "twilio": [
+                "channels.twilio.whatsappNumbers",
+                "channels.twilio.accountSids",
+            ],
+        }
+        fields = field_map.get(provider.strip().lower())
+        if not fields:
+            return None
+
+        query = {
+            "$or": [
+                {field: identity}
+                for field in fields
+                for identity in normalized_identities
+            ]
+        }
+        cursor = self._collection.find(query)
+        documents = await cursor.to_list(length=2)
+        if not documents:
+            return None
+
+        tenant_ids = {
+            str(document.get("tenantId")).strip()
+            for document in documents
+            if isinstance(document, Mapping) and isinstance(document.get("tenantId"), str) and str(document.get("tenantId")).strip()
+        }
+        if len(tenant_ids) != 1:
+            raise DatabaseError("tenant resolution is ambiguous for provider payload")
+
+        return next(iter(tenant_ids))
+
 
 class MongoDatabase(Database):
     """Top-level Mongo database adapter that wires all repositories."""

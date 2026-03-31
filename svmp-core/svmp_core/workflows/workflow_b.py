@@ -363,7 +363,7 @@ async def run_workflow_b(
             assert acquired_session is not None
             send_result = await _send_answer_reply(
                 identity,
-                matched_entry.answer,
+                openai_match.entry.answer,
                 provider_name=acquired_session.provider,
                 settings=runtime_settings,
             )

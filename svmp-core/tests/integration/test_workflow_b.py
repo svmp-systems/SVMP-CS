@@ -342,10 +342,10 @@ async def test_workflow_b_wraps_internal_failures_and_keeps_session_latched(
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_sends_answer_via_active_provider(
+async def test_workflow_b_routes_answer_through_session_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Answered results should send the supplied answer through the resolved provider."""
+    """Answered results should send through the provider stored on the session."""
 
     captured: dict[str, Any] = {}
 
@@ -357,7 +357,7 @@ async def test_workflow_b_sends_answer_via_active_provider(
 
         async def send_text(self, message, *, settings):
             captured["message"] = message
-            captured["provider"] = settings.WHATSAPP_PROVIDER
+            captured["settings_provider"] = settings.WHATSAPP_PROVIDER
             return OutboundSendResult(
                 provider="twilio",
                 accepted=True,
@@ -366,10 +366,14 @@ async def test_workflow_b_sends_answer_via_active_provider(
             )
 
     monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
-    monkeypatch.setattr("svmp_core.workflows.workflow_b.get_whatsapp_provider", lambda **kwargs: FakeProvider())
+    def fake_get_provider(**kwargs):
+        captured["requested_provider"] = kwargs.get("requested_provider")
+        return FakeProvider()
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.get_whatsapp_provider", fake_get_provider)
 
     database = ProcessingDatabase(
-        sessions=[_ready_session(text="What do you do?")],
+        sessions=[_ready_session(text="What do you do?", provider="twilio")],
         knowledge_entries=[
             KnowledgeEntry(
                 _id="faq-1",
@@ -387,7 +391,7 @@ async def test_workflow_b_sends_answer_via_active_provider(
         settings=Settings(
             _env_file=None,
             SIMILARITY_THRESHOLD=0.75,
-            WHATSAPP_PROVIDER="twilio",
+            WHATSAPP_PROVIDER="meta",
             OPENAI_MATCHER_CANDIDATE_LIMIT=8,
         ),
         now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
@@ -397,7 +401,8 @@ async def test_workflow_b_sends_answer_via_active_provider(
     assert result.outbound_send_result.provider == "twilio"
     assert result.outbound_send_result.external_message_id == "SM999"
     assert result.matcher_used == "openai"
-    assert captured["provider"] == "twilio"
+    assert captured["requested_provider"] == "twilio"
+    assert captured["settings_provider"] == "meta"
     assert captured["message"].tenant_id == "Niyomilan"
     assert captured["message"].client_id == "whatsapp"
     assert captured["message"].user_id == "9845891194"

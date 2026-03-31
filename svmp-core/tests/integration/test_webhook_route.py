@@ -87,6 +87,29 @@ class StubTenantRepository(TenantRepository):
     async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
         return None
 
+    async def resolve_tenant_id_for_provider(
+        self,
+        *,
+        provider: str,
+        identities,
+    ) -> str | None:
+        mappings = {
+            "meta": {
+                "1234567890": "Niyomilan",
+                "+15551234567": "Niyomilan",
+            },
+            "twilio": {
+                "whatsapp:+14155238886": "Niyomilan",
+                "AC123": "Niyomilan",
+            },
+        }
+        provider_mappings = mappings.get(provider, {})
+        for identity in identities:
+            tenant_id = provider_mappings.get(identity)
+            if tenant_id is not None:
+                return tenant_id
+        return None
+
 
 class InMemoryDatabase(Database):
     """Small database wrapper for webhook route tests."""
@@ -204,7 +227,7 @@ def test_webhook_post_normalizes_meta_payload() -> None:
 
     response = client.post(
         "/webhook",
-        headers={"X-SVMP-Tenant-Id": "Niyomilan", "X-SVMP-Provider": "meta"},
+        headers={"X-SVMP-Provider": "meta"},
         json={
             "object": "whatsapp_business_account",
             "entry": [
@@ -212,6 +235,10 @@ def test_webhook_post_normalizes_meta_payload() -> None:
                     "changes": [
                         {
                             "value": {
+                                "metadata": {
+                                    "phone_number_id": "1234567890",
+                                    "display_phone_number": "+15551234567",
+                                },
                                 "messages": [
                                     {
                                         "id": "wamid.HBgM123",
@@ -244,9 +271,11 @@ def test_webhook_post_normalizes_twilio_form_payload() -> None:
 
     response = client.post(
         "/webhook",
-        headers={"X-SVMP-Tenant-Id": "Niyomilan", "X-SVMP-Provider": "twilio"},
+        headers={"X-SVMP-Provider": "twilio"},
         data={
             "MessageSid": "SM123",
+            "AccountSid": "AC123",
+            "To": "whatsapp:+14155238886",
             "From": "whatsapp:+919845891194",
             "Body": "hello from twilio",
         },
@@ -262,8 +291,8 @@ def test_webhook_post_normalizes_twilio_form_payload() -> None:
     assert session.provider == "twilio"
 
 
-def test_webhook_post_rejects_provider_payload_without_tenant() -> None:
-    """Provider-native payloads should require an explicit tenant identity."""
+def test_webhook_post_rejects_provider_payload_without_resolvable_tenant() -> None:
+    """Provider-native payloads should fail cleanly when no tenant mapping can be resolved."""
 
     client, _ = _build_client()
 
@@ -272,13 +301,15 @@ def test_webhook_post_rejects_provider_payload_without_tenant() -> None:
         headers={"X-SVMP-Provider": "twilio"},
         data={
             "MessageSid": "SM123",
+            "AccountSid": "AC999",
+            "To": "whatsapp:+19999999999",
             "From": "whatsapp:+919845891194",
             "Body": "hello from twilio",
         },
     )
 
     assert response.status_code == 400
-    assert response.json() == {"detail": "tenantId is required"}
+    assert response.json() == {"detail": "tenantId could not be resolved from provider payload"}
 
 
 def test_webhook_get_returns_405_for_twilio_provider() -> None:

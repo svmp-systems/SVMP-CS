@@ -9,6 +9,16 @@
     }
   ],
   "tags": ["demo", "whatsapp"],
+  "channels": {
+    "meta": {
+      "phoneNumberIds": ["replace-with-meta-phone-number-id"],
+      "displayNumbers": ["replace-with-meta-display-number"]
+    },
+    "twilio": {
+      "whatsappNumbers": ["whatsapp:+14155238886"],
+      "accountSids": ["replace-with-twilio-account-sid"]
+    }
+  },
   "settings": {
     "confidenceThreshold": 0.75
   },

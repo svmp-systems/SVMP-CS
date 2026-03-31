@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -71,6 +71,16 @@ class TenantRepository(ABC):
     @abstractmethod
     async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
         """Return the tenant configuration document if it exists."""
+
+    async def resolve_tenant_id_for_provider(
+        self,
+        *,
+        provider: str,
+        identities: Sequence[str],
+    ) -> str | None:
+        """Resolve a tenant id from provider channel identities when supported."""
+
+        return None
 
 
 class Database(ABC):

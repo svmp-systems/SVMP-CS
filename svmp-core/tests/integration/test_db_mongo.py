@@ -117,8 +117,15 @@ class FakeMotorClient:
 def _matches(document: dict, query: dict) -> bool:
     """Evaluate the small subset of Mongo filters used by the adapter."""
 
+    if "$or" in query:
+        clauses = query.get("$or", [])
+        if not any(_matches(document, clause) for clause in clauses):
+            return False
+
     for key, expected in query.items():
-        actual = document.get(key)
+        if key == "$or":
+            continue
+        actual = _lookup(document, key)
         if isinstance(expected, dict):
             for operator, operand in expected.items():
                 if operator == "$lte" and not (actual <= operand):
@@ -127,9 +134,23 @@ def _matches(document: dict, query: dict) -> bool:
                     return False
                 if operator == "$ne" and not (actual != operand):
                     return False
+        elif isinstance(actual, list):
+            if expected not in actual:
+                return False
         elif actual != expected:
             return False
     return True
+
+
+def _lookup(document: dict, dotted_key: str):
+    """Return a nested document value using dotted-key Mongo semantics."""
+
+    current = document
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
 
 
 def _build_settings() -> Settings:
@@ -299,6 +320,52 @@ async def test_knowledge_governance_and_tenant_repositories() -> None:
     assert tenant is not None
     assert tenant["tenantId"] == "Niyomilan"
     assert tenant["settings"]["confidenceThreshold"] == 0.75
+
+
+@pytest.mark.asyncio
+async def test_tenant_repository_resolves_tenant_from_provider_channel_identities() -> None:
+    """Tenant repository should resolve tenants from stored Meta and Twilio channel mappings."""
+
+    fake_client = FakeMotorClient()
+    database = MongoDatabase(settings=_build_settings(), client=fake_client)
+    await database.connect()
+
+    fake_db = fake_client["svmp_test"]
+    fake_db["tenants"].documents.extend(
+        [
+            {
+                "_id": "tenant-1",
+                "tenantId": "Niyomilan",
+                "channels": {
+                    "meta": {
+                        "phoneNumberIds": ["1234567890"],
+                        "displayNumbers": ["+15551234567"],
+                    },
+                    "twilio": {
+                        "whatsappNumbers": ["whatsapp:+14155238886"],
+                        "accountSids": ["AC123"],
+                    },
+                },
+            }
+        ]
+    )
+
+    meta_tenant = await database.tenants.resolve_tenant_id_for_provider(
+        provider="meta",
+        identities=["1234567890"],
+    )
+    twilio_tenant = await database.tenants.resolve_tenant_id_for_provider(
+        provider="twilio",
+        identities=["whatsapp:+14155238886", "AC123"],
+    )
+    missing_tenant = await database.tenants.resolve_tenant_id_for_provider(
+        provider="twilio",
+        identities=["whatsapp:+19999999999"],
+    )
+
+    assert meta_tenant == "Niyomilan"
+    assert twilio_tenant == "Niyomilan"
+    assert missing_tenant is None
 
 
 @pytest.mark.asyncio
