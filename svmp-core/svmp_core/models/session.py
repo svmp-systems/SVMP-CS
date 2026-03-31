@@ -32,6 +32,7 @@ class SessionState(BaseModel):
     tenant_id: str = Field(alias="tenantId")
     client_id: str = Field(alias="clientId")
     user_id: str = Field(alias="userId")
+    provider: str | None = None
     status: Literal["open", "closed"] = "open"
     processing: bool = False
     messages: list[MessageItem] = Field(default_factory=list)

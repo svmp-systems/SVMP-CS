@@ -187,13 +187,14 @@ async def _send_answer_reply(
     identity: IdentityFrame,
     answer_text: str,
     *,
+    provider_name: str | None,
     settings: Settings,
 ) -> OutboundSendResult:
     """Send an answered response back through the active WhatsApp provider."""
 
     provider = get_whatsapp_provider(
         settings=settings,
-        requested_provider=settings.WHATSAPP_PROVIDER,
+        requested_provider=provider_name or settings.WHATSAPP_PROVIDER,
     )
     return await provider.send_text(
         OutboundTextMessage(
@@ -357,16 +358,20 @@ async def run_workflow_b(
         matcher_metadata = _matcher_metadata(openai_match)
 
         if similarity_decision.should_answer and openai_match.entry is not None:
+            matched_entry = openai_match.entry
+            assert matched_entry is not None
+            assert acquired_session is not None
             send_result = await _send_answer_reply(
                 identity,
-                openai_match.entry.answer,
+                matched_entry.answer,
+                provider_name=acquired_session.provider,
                 settings=runtime_settings,
             )
             log = build_answered_log(
                 identity,
                 combined_text,
                 similarity_score=similarity_decision.score or 0.0,
-                answer_supplied=openai_match.entry.answer,
+                answer_supplied=matched_entry.answer,
                 metadata={
                     "domainId": domain_id,
                     **matcher_metadata,
@@ -386,7 +391,7 @@ async def run_workflow_b(
                 combined_text=combined_text,
                 domain_id=domain_id,
                 similarity_score=similarity_decision.score,
-                answer_supplied=openai_match.entry.answer,
+                answer_supplied=matched_entry.answer,
                 outbound_send_result=send_result,
                 escalation_target=None,
                 reason=similarity_decision.reason,

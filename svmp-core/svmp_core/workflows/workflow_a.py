@@ -50,6 +50,7 @@ async def run_workflow_a(
             tenant_id=identity.tenant_id,
             client_id=identity.client_id,
             user_id=identity.user_id,
+            provider=payload.provider,
             processing=False,
             messages=[new_message],
             created_at=current_time,
@@ -65,10 +66,10 @@ async def run_workflow_a(
         existing_session.id,
         {
             "messages": [*existing_session.messages, new_message],
+            "provider": payload.provider,
             "status": "open",
             "updated_at": current_time,
             "debounce_expires_at": debounce_expires_at,
-            "status": "open",
             "processing": False,
         },
     )

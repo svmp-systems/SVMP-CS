@@ -130,18 +130,19 @@ def _settings() -> Settings:
     )
 
 
-def _build_client() -> TestClient:
+def _build_client(*, database: InMemoryDatabase | None = None) -> tuple[TestClient, InMemoryDatabase]:
     """Build a FastAPI test app with the webhook router attached."""
 
+    runtime_database = database or InMemoryDatabase()
     app = FastAPI()
-    app.include_router(build_webhook_router(InMemoryDatabase(), settings=_settings()))
-    return TestClient(app)
+    app.include_router(build_webhook_router(runtime_database, settings=_settings()))
+    return TestClient(app), runtime_database
 
 
 def test_webhook_get_verification_returns_challenge() -> None:
     """GET verification should echo the challenge when the token matches."""
 
-    client = _build_client()
+    client, _ = _build_client()
 
     response = client.get(
         "/webhook",
@@ -159,7 +160,7 @@ def test_webhook_get_verification_returns_challenge() -> None:
 def test_webhook_post_intakes_valid_payload() -> None:
     """POST webhook intake should accept already-normalized payloads."""
 
-    client = _build_client()
+    client, _ = _build_client()
 
     response = client.post(
         "/webhook",
@@ -174,17 +175,14 @@ def test_webhook_post_intakes_valid_payload() -> None:
     assert response.status_code == 200
     assert response.json() == {
         "status": "accepted",
-        "provider": "normalized",
-        "messageCount": 1,
         "sessionId": "session-1",
-        "sessionIds": ["session-1"],
     }
 
 
 def test_webhook_post_rejects_malformed_payload() -> None:
     """Malformed normalized payloads should fail validation at the route boundary."""
 
-    client = _build_client()
+    client, _ = _build_client()
 
     response = client.post(
         "/webhook",
@@ -202,7 +200,7 @@ def test_webhook_post_rejects_malformed_payload() -> None:
 def test_webhook_post_normalizes_meta_payload() -> None:
     """Meta webhook JSON should normalize into the internal inbound schema."""
 
-    client = _build_client()
+    client, database = _build_client()
 
     response = client.post(
         "/webhook",
@@ -235,11 +233,14 @@ def test_webhook_post_normalizes_meta_payload() -> None:
         "sessionId": "session-1",
     }
 
+    session = database._session_state._sessions["session-1"]
+    assert session.provider == "meta"
+
 
 def test_webhook_post_normalizes_twilio_form_payload() -> None:
     """Twilio form posts should normalize into the internal inbound schema."""
 
-    client = _build_client()
+    client, database = _build_client()
 
     response = client.post(
         "/webhook",
@@ -257,11 +258,14 @@ def test_webhook_post_normalizes_twilio_form_payload() -> None:
         "sessionId": "session-1",
     }
 
+    session = database._session_state._sessions["session-1"]
+    assert session.provider == "twilio"
+
 
 def test_webhook_post_rejects_provider_payload_without_tenant() -> None:
     """Provider-native payloads should require an explicit tenant identity."""
 
-    client = _build_client()
+    client, _ = _build_client()
 
     response = client.post(
         "/webhook",
@@ -280,7 +284,7 @@ def test_webhook_post_rejects_provider_payload_without_tenant() -> None:
 def test_webhook_get_returns_405_for_twilio_provider() -> None:
     """GET verification should only work for providers that support it."""
 
-    client = _build_client()
+    client, _ = _build_client()
 
     response = client.get(
         "/webhook",

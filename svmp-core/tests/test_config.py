@@ -88,6 +88,25 @@ def test_validate_runtime_accepts_twilio_values() -> None:
     settings.validate_runtime()
 
 
+def test_validate_runtime_accepts_twilio_and_meta_credentials_together() -> None:
+    """A single runtime may carry both provider credential sets at once."""
+
+    settings = Settings(
+        _env_file=None,
+        MONGODB_URI="mongodb://unit-test",
+        OPENAI_API_KEY="test-key",
+        WHATSAPP_PROVIDER="meta",
+        WHATSAPP_TOKEN="meta-token",
+        WHATSAPP_PHONE_NUMBER_ID="1234567890",
+        WHATSAPP_VERIFY_TOKEN="verify-me",
+        TWILIO_ACCOUNT_SID="AC123",
+        TWILIO_AUTH_TOKEN="secret",
+        TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
+    )
+
+    settings.validate_runtime()
+
+
 def test_tenant_threshold_uses_tenant_value() -> None:
     """Tenant threshold resolves from tenant settings."""
 
