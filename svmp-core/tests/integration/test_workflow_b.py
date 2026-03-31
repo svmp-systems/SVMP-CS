@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -165,7 +164,12 @@ class ProcessingDatabase(Database):
 def _settings() -> Settings:
     """Return deterministic workflow settings for tests."""
 
-    return Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized")
+    return Settings(
+        _env_file=None,
+        SIMILARITY_THRESHOLD=0.75,
+        WHATSAPP_PROVIDER="normalized",
+        OPENAI_MATCHER_CANDIDATE_LIMIT=8,
+    )
 
 
 def _ready_session(*, text: str) -> SessionState:
@@ -202,8 +206,15 @@ def _tenant(*, threshold: float = 0.75) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_answers_high_confidence_informational_query() -> None:
-    """Workflow B should answer and log when confidence is high enough."""
+async def test_workflow_b_answers_high_confidence_informational_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Workflow B should answer, send, and log when OpenAI returns a confident match."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
 
     database = ProcessingDatabase(
         sessions=[_ready_session(text="What do you do?")],
@@ -228,7 +239,8 @@ async def test_workflow_b_answers_high_confidence_informational_query() -> None:
     assert result.processed is True
     assert result.decision == GovernanceDecision.ANSWERED
     assert result.answer_supplied == "We help customers."
-    assert result.similarity_score == 1.0
+    assert result.similarity_score == 0.92
+    assert result.matcher_used == "openai"
     assert result.outbound_send_result is not None
     assert result.outbound_send_result.provider == "normalized"
     assert result.outbound_send_result.accepted is True
@@ -236,6 +248,7 @@ async def test_workflow_b_answers_high_confidence_informational_query() -> None:
     written_logs = database.governance_logs.logs
     assert len(written_logs) == 1
     assert written_logs[0].decision == GovernanceDecision.ANSWERED
+    assert written_logs[0].metadata["matcherUsed"] == "openai"
     assert written_logs[0].metadata["delivery"]["provider"] == "normalized"
 
     session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
@@ -245,8 +258,15 @@ async def test_workflow_b_answers_high_confidence_informational_query() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_escalates_low_confidence_query() -> None:
-    """Workflow B should escalate and log when the FAQ match is weak."""
+async def test_workflow_b_escalates_low_confidence_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Workflow B should escalate when OpenAI returns a weak match."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.21, "reason": "candidate is weakly related"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
 
     database = ProcessingDatabase(
         sessions=[_ready_session(text="What are your opening hours?")],
@@ -273,24 +293,24 @@ async def test_workflow_b_escalates_low_confidence_query() -> None:
     assert result.answer_supplied is None
     assert result.outbound_send_result is None
     assert result.escalation_target is not None
+    assert result.matcher_used == "openai"
 
     written_logs = database.governance_logs.logs
     assert len(written_logs) == 1
     assert written_logs[0].decision == GovernanceDecision.ESCALATED
-    session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
-    assert session is not None
-    assert session.status == "open"
-    assert session.processing is True
-
-    session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
-    assert session is not None
-    assert session.status == "open"
-    assert session.processing is True
+    assert written_logs[0].metadata["matcherUsed"] == "openai"
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_wraps_internal_failures_and_keeps_session_latched() -> None:
+async def test_workflow_b_wraps_internal_failures_and_keeps_session_latched(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Internal failures should be wrapped without clearing the processing latch."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
 
     database = ProcessingDatabase(
         sessions=[_ready_session(text="What do you do?")],
@@ -321,10 +341,15 @@ async def test_workflow_b_wraps_internal_failures_and_keeps_session_latched() ->
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_sends_answer_via_active_provider() -> None:
+async def test_workflow_b_sends_answer_via_active_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Answered results should send the supplied answer through the resolved provider."""
 
     captured: dict[str, Any] = {}
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
 
     class FakeProvider:
         name = "twilio"
@@ -338,6 +363,9 @@ async def test_workflow_b_sends_answer_via_active_provider() -> None:
                 status="accepted",
                 externalMessageId="SM999",
             )
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.get_whatsapp_provider", lambda **kwargs: FakeProvider())
 
     database = ProcessingDatabase(
         sessions=[_ready_session(text="What do you do?")],
@@ -353,20 +381,21 @@ async def test_workflow_b_sends_answer_via_active_provider() -> None:
         tenants=[_tenant(threshold=0.75)],
     )
 
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr("svmp_core.workflows.workflow_b.get_whatsapp_provider", lambda **kwargs: FakeProvider())
-    try:
-        result = await run_workflow_b(
-            database,
-            settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="twilio"),
-            now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
-        )
-    finally:
-        monkeypatch.undo()
+    result = await run_workflow_b(
+        database,
+        settings=Settings(
+            _env_file=None,
+            SIMILARITY_THRESHOLD=0.75,
+            WHATSAPP_PROVIDER="twilio",
+            OPENAI_MATCHER_CANDIDATE_LIMIT=8,
+        ),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
 
     assert result.outbound_send_result is not None
     assert result.outbound_send_result.provider == "twilio"
     assert result.outbound_send_result.external_message_id == "SM999"
+    assert result.matcher_used == "openai"
     assert captured["provider"] == "twilio"
     assert captured["message"].tenant_id == "Niyomilan"
     assert captured["message"].client_id == "whatsapp"

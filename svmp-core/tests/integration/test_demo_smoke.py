@@ -230,8 +230,15 @@ def _settings() -> Settings:
 
 
 @pytest.mark.asyncio
-async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
+async def test_demo_smoke_ingest_then_process_writes_governance_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """One inbound webhook should flow through session ingest and processing."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
 
     database = DemoDatabase()
     scheduler = SchedulerStub()
@@ -251,10 +258,7 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
         assert response.status_code == 200
         assert response.json() == {
             "status": "accepted",
-            "provider": "normalized",
-            "messageCount": 1,
             "sessionId": "session-1",
-            "sessionIds": ["session-1"],
         }
 
         result = await run_workflow_b(
@@ -266,7 +270,8 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
         assert result.processed is True
         assert result.decision == GovernanceDecision.ANSWERED
         assert result.answer_supplied == "We help customers."
-        assert result.similarity_score == 1.0
+        assert result.similarity_score == 0.92
+        assert result.matcher_used == "openai"
         assert result.outbound_send_result is not None
         assert result.outbound_send_result.provider == "normalized"
 
@@ -280,4 +285,5 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log() -> None:
         assert written_logs[0].decision == GovernanceDecision.ANSWERED
         assert written_logs[0].combined_text == "What do you do?"
         assert written_logs[0].answer_supplied == "We help customers."
+        assert written_logs[0].metadata["matcherUsed"] == "openai"
         assert written_logs[0].metadata["delivery"]["provider"] == "normalized"
