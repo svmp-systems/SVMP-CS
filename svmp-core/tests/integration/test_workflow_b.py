@@ -196,6 +196,7 @@ def _ready_session(
         messages=[
             MessageItem(
                 text=message_text,
+                externalMessageId=f"SM{index + 1}",
                 at=datetime(2026, 3, 30, 9, 55 + index, tzinfo=timezone.utc),
             )
             for index, message_text in enumerate(message_texts)
@@ -732,3 +733,65 @@ async def test_workflow_b_uses_session_provider_for_outbound_routing() -> None:
     assert captured["requested_provider"] == "twilio"
     assert result.outbound_send_result is not None
     assert result.outbound_send_result.provider == "twilio"
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_sends_typing_indicator_when_processing_begins() -> None:
+    """Workflow B should trigger a provider typing indicator before answering."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    class FakeProvider:
+        name = "twilio"
+
+        async def send_typing_indicator(self, *, inbound_message_id, settings):
+            captured["typing_message_id"] = inbound_message_id
+            captured["typing_settings_provider"] = settings.WHATSAPP_PROVIDER
+
+        async def send_text(self, message, *, settings):
+            captured["sent_text"] = message.text
+            return OutboundSendResult(
+                provider="twilio",
+                accepted=True,
+                status="accepted",
+                externalMessageId="SM321",
+            )
+
+    database = ProcessingDatabase(
+        sessions=[_ready_session(text="What do you do?", provider="twilio")],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="What do you do?",
+                answer="We help customers.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    monkeypatch = pytest.MonkeyPatch()
+
+    def fake_get_whatsapp_provider(**kwargs):
+        captured["requested_provider"] = kwargs["requested_provider"]
+        return FakeProvider()
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.get_whatsapp_provider", fake_get_whatsapp_provider)
+    try:
+        result = await run_workflow_b(
+            database,
+            settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="meta"),
+            now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+        )
+    finally:
+        monkeypatch.undo()
+
+    assert result.decision == GovernanceDecision.ANSWERED
+    assert captured["requested_provider"] == "twilio"
+    assert captured["typing_message_id"] == "SM1"
+    assert captured["sent_text"] == "We help customers."

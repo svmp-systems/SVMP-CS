@@ -142,3 +142,54 @@ async def test_twilio_provider_send_text_surfaces_provider_error_detail(
                 TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_twilio_provider_send_typing_indicator_uses_typing_resource(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Twilio typing indicators should call the dedicated messaging endpoint."""
+
+    captured: dict[str, Any] = {}
+
+    class FakeResponse:
+        is_error = False
+
+        def json(self) -> dict[str, str]:
+            return {"status": "accepted"}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs) -> None:
+            captured["timeout"] = kwargs.get("timeout")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        async def post(self, url, data=None, auth=None):
+            captured["url"] = url
+            captured["data"] = dict(data)
+            captured["auth"] = auth
+            return FakeResponse()
+
+    monkeypatch.setattr("svmp_core.integrations.whatsapp_provider.httpx.AsyncClient", FakeAsyncClient)
+
+    provider = TwilioWhatsAppProvider()
+    await provider.send_typing_indicator(
+        inbound_message_id="SM123",
+        settings=Settings(
+            _env_file=None,
+            TWILIO_ACCOUNT_SID="AC123",
+            TWILIO_AUTH_TOKEN="secret",
+            TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
+        ),
+    )
+
+    assert captured["url"] == "https://messaging.twilio.com/v2/Indicators/Typing.json"
+    assert captured["data"] == {
+        "messageId": "SM123",
+        "channel": "whatsapp",
+    }
+    assert captured["auth"] == ("AC123", "secret")

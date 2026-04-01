@@ -312,6 +312,28 @@ async def _send_answer_reply(
     )
 
 
+async def _send_typing_indicator(
+    session: SessionState,
+    *,
+    settings: Settings,
+) -> None:
+    """Send a provider-native typing indicator when supported."""
+
+    provider = get_whatsapp_provider(
+        settings=settings,
+        requested_provider=session.provider or settings.WHATSAPP_PROVIDER,
+    )
+    inbound_message_id = None
+    for message in reversed(session.messages):
+        if message.external_message_id is not None and message.external_message_id.strip():
+            inbound_message_id = message.external_message_id.strip()
+            break
+    await provider.send_typing_indicator(
+        inbound_message_id=inbound_message_id,
+        settings=settings,
+    )
+
+
 @dataclass(frozen=True)
 class WorkflowBResult:
     """Summary of a Workflow B processing run."""
@@ -366,6 +388,10 @@ async def run_workflow_b(
             client_id=acquired_session.client_id,
             user_id=acquired_session.user_id,
         )
+        try:
+            await _send_typing_indicator(acquired_session, settings=runtime_settings)
+        except Exception:
+            pass
         conversation = _build_conversation_view(acquired_session)
         combined_text = conversation.combined_text
         if not combined_text:
