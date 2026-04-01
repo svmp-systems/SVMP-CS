@@ -7,7 +7,6 @@ from svmp_core.core.escalation import (
     EscalationTarget,
     request_escalation,
 )
-from svmp_core.core.intent_fork import IntentType, infer_intent
 from svmp_core.core.governance import (
     build_answered_log,
     build_closed_log,
@@ -25,7 +24,6 @@ __all__ = [
     "EscalationRequest",
     "EscalationResult",
     "EscalationTarget",
-    "IntentType",
     "build_answered_log",
     "build_closed_log",
     "build_escalated_log",
@@ -33,6 +31,5 @@ __all__ = [
     "choose_domain",
     "evaluate_similarity",
     "generate_customer_response",
-    "infer_intent",
     "request_escalation",
 ]

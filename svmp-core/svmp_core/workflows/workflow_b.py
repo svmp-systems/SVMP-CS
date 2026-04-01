@@ -13,12 +13,10 @@ from svmp_core.config import Settings, get_settings, get_tenant_confidence_thres
 from svmp_core.core import (
     EscalationTarget,
     IdentityFrame,
-    IntentType,
     build_answered_log,
     build_escalated_log,
     choose_domain,
     evaluate_similarity,
-    infer_intent,
     request_escalation,
 )
 from svmp_core.db.base import Database
@@ -76,8 +74,48 @@ class MatcherResult:
     metadata: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ConversationView:
+    """Derived active-question and archived context inputs."""
+
+    active_messages: list[str]
+    active_question: str
+    context: str
+
+
+def _build_conversation_view(session: SessionState) -> ConversationView:
+    """Build the active question from current-window messages and archived context."""
+
+    active_messages = [message.text.strip() for message in session.messages if message.text.strip()]
+    active_question = " ".join(active_messages).strip()
+    context = " ".join(
+        item.strip()
+        for item in session.context
+        if isinstance(item, str) and item.strip()
+    ).strip()
+    return ConversationView(
+        active_messages=active_messages,
+        active_question=active_question,
+        context=context,
+    )
+
+
+def _normalize_similarity_score(raw_score: Any) -> float:
+    """Normalize matcher scores from either 0-1 or 0-100 into 0-1."""
+
+    if not isinstance(raw_score, (int, float)):
+        raise RoutingError("OpenAI matcher returned an invalid similarity score")
+
+    score = float(raw_score)
+    if 0 <= score <= 1:
+        return score
+    if 1 < score <= 100:
+        return score / 100.0
+    raise RoutingError("OpenAI matcher returned an invalid similarity score")
+
+
 async def _openai_match(
-    query: str,
+    conversation: ConversationView,
     entries: list[KnowledgeEntry],
     *,
     settings: Settings,
@@ -93,8 +131,7 @@ async def _openai_match(
             metadata={"candidatesConsidered": 0},
         )
 
-    candidate_limit = max(1, settings.OPENAI_MATCHER_CANDIDATE_LIMIT)
-    candidates = entries[:candidate_limit]
+    candidates = list(entries)
     candidate_payload = [
         {
             "index": index,
@@ -108,13 +145,20 @@ async def _openai_match(
     response = await generate_completion(
         system_prompt=(
             "You rank FAQ candidates for customer-support automation. "
+            "activeQuestion is the only text that should drive candidate selection and answer decision making. "
+            "context is archived history from previous processed windows and must never override activeQuestion. "
+            "Use context only to clarify references when activeQuestion clearly points back to earlier history. "
+            "If activeQuestion alone is unclear or not safely answerable from the candidates, return no match. "
             "Return valid JSON only with keys bestIndex, similarityScore, and reason. "
             "bestIndex must be an integer index from the candidates list or null if none match. "
-            "similarityScore must be a number between 0 and 1 or null when there is no safe match."
+            "similarityScore must be a number between 0 and 1, or between 0 and 100, or null when there is no safe match."
         ),
         user_prompt=json.dumps(
             {
-                "query": query,
+                "activeQuestion": conversation.active_question,
+                "activeMessages": conversation.active_messages,
+                "context": conversation.context,
+                "coreRule": "Use activeQuestion for decision making. Do not answer from context unless activeQuestion clearly refers back to it.",
                 "candidates": candidate_payload,
             },
             ensure_ascii=True,
@@ -141,14 +185,11 @@ async def _openai_match(
     if not isinstance(best_index, int) or best_index < 0 or best_index >= len(candidates):
         raise RoutingError("OpenAI matcher returned an invalid candidate index")
 
-    if not isinstance(similarity_score, (int, float)) or not 0 <= float(similarity_score) <= 1:
-        raise RoutingError("OpenAI matcher returned an invalid similarity score")
-
     matched_entry = candidates[best_index]
     return MatcherResult(
         matcher="openai",
         entry=matched_entry,
-        score=float(similarity_score),
+        score=_normalize_similarity_score(similarity_score),
         reason=reason,
         metadata={"candidatesConsidered": len(candidate_payload)},
     )
@@ -162,6 +203,54 @@ def _matcher_metadata(result: MatcherResult) -> dict[str, Any]:
         "matcherReason": result.reason,
         **result.metadata,
     }
+
+
+async def _archive_processed_window(
+    database: Database,
+    session: SessionState,
+    *,
+    active_question: str,
+    now: datetime,
+) -> SessionState:
+    """Archive the processed active window while preserving any newer inbound messages."""
+
+    if session.id is None:
+        raise DatabaseError("ready session missing id")
+
+    latest_session = await database.session_state.get_by_identity(
+        session.tenant_id,
+        session.client_id,
+        session.user_id,
+    )
+    if latest_session is None or latest_session.id != session.id:
+        raise DatabaseError("failed to load session for archive merge")
+
+    next_context = list(latest_session.context)
+    if active_question.strip():
+        next_context.append(active_question.strip())
+
+    processed_texts = [message.text.strip() for message in session.messages if message.text.strip()]
+    latest_texts = [message.text.strip() for message in latest_session.messages if message.text.strip()]
+    remaining_messages = list(latest_session.messages)
+
+    if processed_texts and latest_texts[: len(processed_texts)] == processed_texts:
+        remaining_messages = latest_session.messages[len(processed_texts) :]
+
+    has_unprocessed_messages = any(message.text.strip() for message in remaining_messages)
+
+    updated_session = await database.session_state.update_by_id(
+        session.id,
+        {
+            "context": next_context,
+            "messages": remaining_messages,
+            "updated_at": latest_session.updated_at if has_unprocessed_messages else now,
+            "debounce_expires_at": latest_session.debounce_expires_at,
+            "processing": False if has_unprocessed_messages else True,
+        },
+    )
+    if updated_session is None:
+        raise DatabaseError("failed to archive processed session window")
+    return updated_session
 
 
 def _fallback_domain_id(tenant_document: Mapping[str, Any] | None) -> str | None:
@@ -262,40 +351,13 @@ async def run_workflow_b(
             client_id=acquired_session.client_id,
             user_id=acquired_session.user_id,
         )
-        combined_text = _combine_messages(acquired_session)
-        if not combined_text:
+        conversation = _build_conversation_view(acquired_session)
+        active_question = conversation.active_question
+        if not active_question:
             raise RoutingError("ready session has no searchable text")
+        combined_text = active_question
 
         tenant_document = await database.tenants.get_by_tenant_id(acquired_session.tenant_id)
-        intent = infer_intent(combined_text)
-
-        if intent != IntentType.INFORMATIONAL:
-            escalation = request_escalation(
-                identity,
-                combined_text,
-                reason=f"intent_{intent.value}",
-                metadata={"intent": intent.value},
-            )
-            log = build_escalated_log(
-                identity,
-                combined_text,
-                metadata={"intent": intent.value, "target": escalation.target.value},
-                timestamp=current_time,
-            )
-            await database.governance_logs.create(log)
-            return WorkflowBResult(
-                processed=True,
-                session_id=acquired_session.id,
-                decision=GovernanceDecision.ESCALATED,
-                combined_text=combined_text,
-                domain_id=None,
-                similarity_score=None,
-                answer_supplied=None,
-                outbound_send_result=None,
-                escalation_target=escalation.target,
-                reason=escalation.reason,
-                matcher_used="intent_gate",
-            )
 
         raw_domains = tenant_document.get("domains", []) if isinstance(tenant_document, Mapping) else []
         fallback_domain_id = _fallback_domain_id(tenant_document)
@@ -307,7 +369,7 @@ async def run_workflow_b(
 
         try:
             domain_id = choose_domain(
-                combined_text,
+                active_question,
                 raw_domains if isinstance(raw_domains, list) else [],
                 fallback_domain_id=fallback_domain_id,
             )
@@ -323,10 +385,22 @@ async def run_workflow_b(
             log = build_escalated_log(
                 identity,
                 combined_text,
-                metadata={"reason": "domain_unresolved", "target": escalation.target.value},
+                metadata={
+                    "reason": "domain_unresolved",
+                    "target": escalation.target.value,
+                    "activeQuestion": conversation.active_question,
+                    "activeMessages": conversation.active_messages,
+                    "context": conversation.context,
+                },
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
+            await _archive_processed_window(
+                database,
+                acquired_session,
+                active_question=conversation.active_question,
+                now=current_time,
+            )
             return WorkflowBResult(
                 processed=True,
                 session_id=acquired_session.id,
@@ -346,7 +420,7 @@ async def run_workflow_b(
             domain_id,
         )
         openai_match = await _openai_match(
-            combined_text,
+            conversation,
             entries,
             settings=runtime_settings,
         )
@@ -374,6 +448,9 @@ async def run_workflow_b(
                 answer_supplied=matched_entry.answer,
                 metadata={
                     "domainId": domain_id,
+                    "activeQuestion": conversation.active_question,
+                    "activeMessages": conversation.active_messages,
+                    "context": conversation.context,
                     **matcher_metadata,
                     "delivery": {
                         "provider": send_result.provider,
@@ -384,6 +461,12 @@ async def run_workflow_b(
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
+            await _archive_processed_window(
+                database,
+                acquired_session,
+                active_question=conversation.active_question,
+                now=current_time,
+            )
             return WorkflowBResult(
                 processed=True,
                 session_id=acquired_session.id,
@@ -410,6 +493,9 @@ async def run_workflow_b(
             similarity_score=similarity_decision.score,
             metadata={
                 "domainId": domain_id,
+                "activeQuestion": conversation.active_question,
+                "activeMessages": conversation.active_messages,
+                "context": conversation.context,
                 "reason": similarity_decision.reason,
                 "target": escalation.target.value,
                 **matcher_metadata,
@@ -417,6 +503,12 @@ async def run_workflow_b(
             timestamp=current_time,
         )
         await database.governance_logs.create(log)
+        await _archive_processed_window(
+            database,
+            acquired_session,
+            active_question=conversation.active_question,
+            now=current_time,
+        )
         return WorkflowBResult(
             processed=True,
             session_id=acquired_session.id,

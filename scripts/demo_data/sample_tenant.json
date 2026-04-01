@@ -1,14 +1,14 @@
 {
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "domains": [
     {
       "domainId": "general",
       "name": "General",
-      "description": "Questions about the company, support system, contact info, and policies",
-      "keywords": ["what", "company", "contact", "support", "hours", "policy"]
+      "description": "Questions about STAY Parfums products, pricing, shipping, availability, brand details, and support.",
+      "keywords": ["perfume", "fragrance", "price", "shipping", "stock", "contact", "offer"]
     }
   ],
-  "tags": ["demo", "whatsapp"],
+  "tags": ["demo", "whatsapp", "stay"],
   "channels": {
     "meta": {
       "phoneNumberIds": ["replace-with-meta-phone-number-id"],
@@ -23,7 +23,7 @@
     "confidenceThreshold": 0.75
   },
   "contactInfo": {
-    "email": "demo@niyomilan.example",
+    "email": "support@stayparfums.example",
     "phone": "+910000000000"
   }
 }

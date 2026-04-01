@@ -35,6 +35,7 @@ class SessionState(BaseModel):
     provider: str | None = None
     status: Literal["open", "closed"] = "open"
     processing: bool = False
+    context: list[str] = Field(default_factory=list)
     messages: list[MessageItem] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow, alias="createdAt")
     updated_at: datetime = Field(default_factory=_utcnow, alias="updatedAt")

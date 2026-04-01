@@ -1,28 +1,84 @@
 {
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "entries": [
     {
-      "_id": "faq-about-company",
+      "_id": "faq-bottle-size",
       "domainId": "general",
-      "question": "What does Niyomilan do?",
-      "answer": "Niyomilan helps businesses automate tier-1 customer support across channels like WhatsApp.",
-      "tags": ["about", "company"],
+      "question": "What bottle size do STAY Parfums fragrances come in?",
+      "answer": "Most STAY Parfums fragrances are offered in 100 mL bottles. Product pages for Stay By The Ocean, Stay The Night, Stay Loyal, Stay Irresistible, Stay Euphoric, and Stay Seductive all list 100 mL as the bottle size.",
+      "tags": ["product", "size", "bottle"],
       "active": true
     },
     {
-      "_id": "faq-whatsapp-support",
+      "_id": "faq-fragrance-types",
       "domainId": "general",
-      "question": "How does your WhatsApp support system work?",
-      "answer": "We ingest customer messages, group fragmented chats, retrieve the best grounded answer, and keep a governance log for every decision.",
-      "tags": ["whatsapp", "support", "product"],
+      "question": "Are STAY Parfums fragrances for men, women, or unisex wear?",
+      "answer": "STAY offers men's, women's, and unisex fragrances. The site has separate Men, Women, and Unisex sections, and each product page clearly labels the fragrance type. For example, Stay Loyal and Stay Irresistible are for men, Stay Euphoric is for women, and Stay By The Ocean, Stay The Night, and Stay Seductive are unisex.",
+      "tags": ["product", "men", "women", "unisex"],
       "active": true
     },
     {
-      "_id": "faq-escalation",
+      "_id": "faq-choose-fragrance",
       "domainId": "general",
-      "question": "What happens when the system is not confident?",
-      "answer": "If the system cannot find a reliable answer, it falls back safely instead of guessing and can be routed for human follow-up.",
-      "tags": ["safety", "escalation"],
+      "question": "How do I choose the right STAY Parfums fragrance for me?",
+      "answer": "A simple way to choose is by the scent family and mood listed on each product page. Current profiles include Fresh Aquatic for Stay By The Ocean, Smoky Vanilla for Stay The Night, Fresh Citrus for Stay Loyal, Spicy Gourmand for Stay Irresistible, Floral Gourmand for Stay Euphoric, and Sweet Amber for Stay Seductive. This makes it easier to shop by vibe, not just by name.",
+      "tags": ["product", "fragrance", "selection"],
+      "active": true
+    },
+    {
+      "_id": "faq-bestsellers",
+      "domainId": "general",
+      "question": "What are STAY Parfums' bestselling fragrances?",
+      "answer": "Based on the visible review counts on the site, Stay By The Ocean appears to be one of the strongest-performing fragrances, and Stay Loyal also looks like a popular pick. A safe recommendation is to start with Stay By The Ocean and Stay Loyal.",
+      "tags": ["product", "bestseller", "recommendation"],
+      "active": true
+    },
+    {
+      "_id": "faq-pricing",
+      "domainId": "general",
+      "question": "How much do STAY Parfums fragrances cost?",
+      "answer": "Most fragrances currently show a regular price of Rs. 1,999 and a sale price of Rs. 1,499 on the site. STAY also promotes a Pair and Save offer: any 2 for Rs. 2,499.",
+      "tags": ["pricing", "offer", "sale"],
+      "active": true
+    },
+    {
+      "_id": "faq-discounts",
+      "domainId": "general",
+      "question": "Do you offer any discounts or promo codes?",
+      "answer": "Yes. The homepage currently promotes the code STAYSCENTED for Rs. 50 off and also highlights the Pair and Save offer: any 2 for Rs. 2,499. Since offers can change, it is best to check the site banner before placing an order.",
+      "tags": ["discount", "promo", "offer"],
+      "active": true
+    },
+    {
+      "_id": "faq-free-shipping",
+      "domainId": "general",
+      "question": "Do you offer free shipping?",
+      "answer": "Yes. The site banner states that STAY Parfums offers free shipping on all orders.",
+      "tags": ["shipping", "delivery"],
+      "active": true
+    },
+    {
+      "_id": "faq-stock",
+      "domainId": "general",
+      "question": "Are all STAY Parfums fragrances always in stock?",
+      "answer": "Not always. Some products show Add to cart while others may show Sold out. For example, Stay The Night, Stay Irresistible, and Stay Seductive have appeared as sold out at times, while Stay By The Ocean, Stay Loyal, and Stay Euphoric have appeared available.",
+      "tags": ["inventory", "stock", "availability"],
+      "active": true
+    },
+    {
+      "_id": "faq-founders",
+      "domainId": "general",
+      "question": "Who founded STAY Parfums?",
+      "answer": "According to the brand's Our Story page, STAY was founded by Nikunj Taneja and Pulkit Sharma, who are presented as certified perfumers and co-founders of the brand.",
+      "tags": ["brand", "founders", "about"],
+      "active": true
+    },
+    {
+      "_id": "faq-contact-support",
+      "domainId": "general",
+      "question": "How can I contact STAY Parfums for help with my order?",
+      "answer": "STAY Parfums has a dedicated Contact Us page where customers can submit their name, email, phone number, and message. The site footer also links to Contact information, Shipping policy, Refund policy, Terms of service, and Privacy policy pages.",
+      "tags": ["contact", "support", "order-help"],
       "active": true
     }
   ]

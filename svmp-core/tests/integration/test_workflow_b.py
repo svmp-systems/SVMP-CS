@@ -172,7 +172,12 @@ def _settings() -> Settings:
     )
 
 
-def _ready_session(*, text: str, provider: str | None = None) -> SessionState:
+def _ready_session(
+    *,
+    text: str,
+    provider: str | None = None,
+    context: list[str] | None = None,
+) -> SessionState:
     """Build a ready-to-process session state."""
 
     return SessionState(
@@ -182,6 +187,7 @@ def _ready_session(*, text: str, provider: str | None = None) -> SessionState:
         userId="9845891194",
         provider=provider,
         processing=False,
+        context=list(context or []),
         messages=[MessageItem(text=text, at=datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc))],
         createdAt=datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc),
         updatedAt=datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc),
@@ -256,6 +262,8 @@ async def test_workflow_b_answers_high_confidence_informational_query(
     assert session is not None
     assert session.status == "open"
     assert session.processing is True
+    assert session.messages == []
+    assert session.context == ["What do you do?"]
 
 
 @pytest.mark.asyncio
@@ -300,6 +308,53 @@ async def test_workflow_b_escalates_low_confidence_query(
     assert len(written_logs) == 1
     assert written_logs[0].decision == GovernanceDecision.ESCALATED
     assert written_logs[0].metadata["matcherUsed"] == "openai"
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_sends_explicit_active_question_and_background_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matcher payload should use activeQuestion explicitly and never send combinedText."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_generate_completion(**kwargs) -> str:
+        captured["system_prompt"] = kwargs["system_prompt"]
+        captured["user_prompt"] = kwargs["user_prompt"]
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+
+    database = ProcessingDatabase(
+        sessions=[
+            _ready_session(
+                text="Are your perfumes for men, women, or unisex wear?",
+                context=["What size are stay perfume bottles ?"],
+            )
+        ],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="Are your perfumes for men, women, or unisex wear?",
+                answer="We offer men's, women's, and unisex fragrances.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    await run_workflow_b(
+        database,
+        settings=_settings(),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert "activeQuestion is the only text that should drive candidate selection" in captured["system_prompt"]
+    assert '"activeQuestion": "Are your perfumes for men, women, or unisex wear?"' in captured["user_prompt"]
+    assert '"activeMessages": ["Are your perfumes for men, women, or unisex wear?"]' in captured["user_prompt"]
+    assert '"context": "What size are stay perfume bottles ?"' in captured["user_prompt"]
+    assert '"combinedText"' not in captured["user_prompt"]
 
 
 @pytest.mark.asyncio
@@ -415,6 +470,9 @@ async def test_workflow_b_uses_session_provider_for_outbound_routing() -> None:
 
     captured: dict[str, Any] = {}
 
+    async def fake_generate_completion(**kwargs) -> str:
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
     class FakeProvider:
         name = "twilio"
 
@@ -447,6 +505,7 @@ async def test_workflow_b_uses_session_provider_for_outbound_routing() -> None:
         captured["requested_provider"] = kwargs["requested_provider"]
         return FakeProvider()
 
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
     monkeypatch.setattr("svmp_core.workflows.workflow_b.get_whatsapp_provider", fake_get_whatsapp_provider)
     try:
         result = await run_workflow_b(
