@@ -4,48 +4,48 @@
     {
       "_id": "faq-bottle-size",
       "domainId": "general",
-      "question": "What size are STAY Parfums bottles?",
-      "answer": "Most STAY Parfums fragrances on the site are offered in 100 mL bottles. Product pages for fragrances like Stay By The Ocean, Stay The Night, Stay Loyal, Stay Irresistible, Stay Euphoric, and Stay Seductive all list 100 mL as the bottle size.",
-      "tags": ["size", "bottle", "product"],
+      "question": "What bottle size do STAY Parfums fragrances come in?",
+      "answer": "Most STAY Parfums fragrances are offered in 100 mL bottles. Product pages for Stay By The Ocean, Stay The Night, Stay Loyal, Stay Irresistible, Stay Euphoric, and Stay Seductive all list 100 mL as the bottle size.",
+      "tags": ["product", "size", "bottle"],
       "active": true
     },
     {
       "_id": "faq-fragrance-types",
       "domainId": "general",
-      "question": "Are your perfumes for men, women, or unisex wear?",
-      "answer": "STAY offers all three: men's, women's, and unisex fragrances. The site has separate Men, Women, and Unisex sections, and each product page clearly labels the fragrance type. For example, Stay Loyal and Stay Irresistible are for men, Stay Euphoric is for women, and Stay By The Ocean, Stay The Night, and Stay Seductive are unisex.",
-      "tags": ["catalog", "men", "women", "unisex"],
+      "question": "Are STAY Parfums fragrances for men, women, or unisex wear?",
+      "answer": "STAY offers men's, women's, and unisex fragrances. The site has separate Men, Women, and Unisex sections, and each product page clearly labels the fragrance type. For example, Stay Loyal and Stay Irresistible are for men, Stay Euphoric is for women, and Stay By The Ocean, Stay The Night, and Stay Seductive are unisex.",
+      "tags": ["product", "men", "women", "unisex"],
       "active": true
     },
     {
       "_id": "faq-choose-fragrance",
       "domainId": "general",
-      "question": "How do I choose the right fragrance for me?",
-      "answer": "A simple way to choose is by the scent family and mood listed on each product. STAY currently includes profiles such as Fresh Aquatic for Stay By The Ocean, Smoky Vanilla for Stay The Night, Fresh Citrus for Stay Loyal, Spicy Gourmand for Stay Irresistible, Floral Gourmand for Stay Euphoric, and Sweet Amber for Stay Seductive. That makes it easier for customers to shop by vibe, not just by name.",
-      "tags": ["shopping", "recommendation", "scent-family"],
+      "question": "How do I choose the right STAY Parfums fragrance for me?",
+      "answer": "A simple way to choose is by the scent family and mood listed on each product page. Current profiles include Fresh Aquatic for Stay By The Ocean, Smoky Vanilla for Stay The Night, Fresh Citrus for Stay Loyal, Spicy Gourmand for Stay Irresistible, Floral Gourmand for Stay Euphoric, and Sweet Amber for Stay Seductive. This makes it easier to shop by vibe, not just by name.",
+      "tags": ["product", "fragrance", "selection"],
       "active": true
     },
     {
       "_id": "faq-bestsellers",
       "domainId": "general",
-      "question": "What are your bestsellers?",
-      "answer": "Based on the visible review counts on product pages, Stay By The Ocean appears to be one of the strongest-performing fragrances on the site, with more reviews than the others shown in search results. Stay Loyal also appears to have stronger traction than several of the rest. A safe answer here is to spotlight Stay By The Ocean and Stay Loyal as popular picks.",
-      "tags": ["bestsellers", "popular", "reviews"],
+      "question": "What are STAY Parfums' bestselling fragrances?",
+      "answer": "Based on the visible review counts on the site, Stay By The Ocean appears to be one of the strongest-performing fragrances, and Stay Loyal also looks like a popular pick. A safe recommendation is to start with Stay By The Ocean and Stay Loyal.",
+      "tags": ["product", "bestseller", "recommendation"],
       "active": true
     },
     {
       "_id": "faq-pricing",
       "domainId": "general",
-      "question": "How much do STAY Parfums cost?",
-      "answer": "Most fragrances currently show a regular price of Rs. 1,999 and a sale price of Rs. 1,499 on the site. STAY also promotes a \"Pair & Save - Any 2 for Rs. 2499 only\" offer on the homepage.",
-      "tags": ["pricing", "offers", "sale"],
+      "question": "How much do STAY Parfums fragrances cost?",
+      "answer": "Most fragrances currently show a regular price of Rs. 1,999 and a sale price of Rs. 1,499 on the site. STAY also promotes a Pair and Save offer: any 2 for Rs. 2,499.",
+      "tags": ["pricing", "offer", "sale"],
       "active": true
     },
     {
       "_id": "faq-discounts",
       "domainId": "general",
       "question": "Do you offer any discounts or promo codes?",
-      "answer": "Yes. The homepage currently promotes \"USE CODE STAYSCENTED FOR Rs. 50 OFF\" and also highlights \"PAIR & SAVE - ANY 2 FOR Rs. 2499 ONLY!\". Since offers can change, customers should check the banner at the top of the site before placing an order.",
+      "answer": "Yes. The homepage currently promotes the code STAYSCENTED for Rs. 50 off and also highlights the Pair and Save offer: any 2 for Rs. 2,499. Since offers can change, it is best to check the site banner before placing an order.",
       "tags": ["discount", "promo", "offer"],
       "active": true
     },
@@ -53,32 +53,32 @@
       "_id": "faq-free-shipping",
       "domainId": "general",
       "question": "Do you offer free shipping?",
-      "answer": "Yes. The site banner clearly states \"FREE SHIPPING ON ALL ORDERS.\"",
+      "answer": "Yes. The site banner states that STAY Parfums offers free shipping on all orders.",
       "tags": ["shipping", "delivery"],
       "active": true
     },
     {
       "_id": "faq-stock",
       "domainId": "general",
-      "question": "Are all fragrances always in stock?",
-      "answer": "Not always. Some products currently show Add to cart, while others show Sold out. For example, search results indicate that Stay The Night, Stay Irresistible, and Stay Seductive have appeared as sold out at times, while others such as Stay By The Ocean, Stay Loyal, and Stay Euphoric are available.",
+      "question": "Are all STAY Parfums fragrances always in stock?",
+      "answer": "Not always. Some products show Add to cart while others may show Sold out. For example, Stay The Night, Stay Irresistible, and Stay Seductive have appeared as sold out at times, while Stay By The Ocean, Stay Loyal, and Stay Euphoric have appeared available.",
       "tags": ["inventory", "stock", "availability"],
       "active": true
     },
     {
       "_id": "faq-founders",
       "domainId": "general",
-      "question": "Who is behind STAY Parfums?",
-      "answer": "According to the brand's Our Story page, STAY was founded by Nikunj Taneja and Pulkit Sharma, who are presented as Certified Perfumers and co-founders of the brand. The brand positions itself around making fragrance feel more personal and expressive.",
-      "tags": ["founders", "brand", "story"],
+      "question": "Who founded STAY Parfums?",
+      "answer": "According to the brand's Our Story page, STAY was founded by Nikunj Taneja and Pulkit Sharma, who are presented as certified perfumers and co-founders of the brand.",
+      "tags": ["brand", "founders", "about"],
       "active": true
     },
     {
-      "_id": "faq-contact",
+      "_id": "faq-contact-support",
       "domainId": "general",
-      "question": "How can I contact STAY Parfums if I need help with my order?",
-      "answer": "The site has a dedicated Contact Us page where customers can submit their name, email, phone number, and message. The footer also links to the site's Shipping policy, Refund policy, Terms of service, Privacy policy, and Contact information pages. I could see those policy links are present, but I was not able to reliably extract their full text from the site, so I would avoid making overly specific return-policy claims unless STAY confirms them directly.",
-      "tags": ["contact", "order-help", "policies"],
+      "question": "How can I contact STAY Parfums for help with my order?",
+      "answer": "STAY Parfums has a dedicated Contact Us page where customers can submit their name, email, phone number, and message. The site footer also links to Contact information, Shipping policy, Refund policy, Terms of service, and Privacy policy pages.",
+      "tags": ["contact", "support", "order-help"],
       "active": true
     }
   ]

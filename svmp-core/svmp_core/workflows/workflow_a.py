@@ -56,6 +56,7 @@ async def run_workflow_a(
             user_id=identity.user_id,
             provider=payload.provider,
             processing=False,
+            context=[],
             messages=[new_message],
             created_at=current_time,
             updated_at=current_time,

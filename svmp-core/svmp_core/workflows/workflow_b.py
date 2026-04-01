@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,9 +30,6 @@ from svmp_core.models import (
     OutboundTextMessage,
     SessionState,
 )
-
-
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 
 
 def _utcnow() -> datetime:
@@ -115,6 +111,32 @@ class MatcherResult:
     metadata: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ConversationView:
+    """Derived active-question and archived context inputs."""
+
+    active_messages: list[str]
+    active_question: str
+    context: str
+
+
+def _build_conversation_view(session: SessionState) -> ConversationView:
+    """Build the active question from current-window messages and archived context."""
+
+    active_messages = [message.text.strip() for message in session.messages if message.text.strip()]
+    active_question = " ".join(active_messages).strip()
+    context = " ".join(
+        item.strip()
+        for item in session.context
+        if isinstance(item, str) and item.strip()
+    ).strip()
+    return ConversationView(
+        active_messages=active_messages,
+        active_question=active_question,
+        context=context,
+    )
+
+
 def _normalize_similarity_score(raw_score: Any) -> float:
     """Normalize matcher scores from either 0-1 or 0-100 into 0-1."""
 
@@ -160,21 +182,18 @@ async def _openai_match(
     response = await generate_completion(
         system_prompt=(
             "You rank FAQ candidates for customer-support automation. "
-            "The core system sends recentMessages as the full current debounce window and context as older history only. do NOT use context for the actual answer, use it only to provide session background. "
-            "recentMessages contains only the customer messages collected in the current debounce window before this run. "
-            "context contains text from previous processed windows and is supporting context only. "
-            "Infer the LAST COHERENT SENTENCE or question from recentMessages and USE ONLY LAST COHERENT SENTENCE as the authoritative ask. "
-            "Never let context override the last coherent sentence from recentMessages. "
-            "If that final coherent ask is unclear, unrelated to the candidates, or not safely answerable, return no match. "
+            "activeQuestion is the only text that should drive candidate selection and answer decision making. "
+            "context is archived history from previous processed windows and must never override activeQuestion. "
+            "Use context only to clarify references when activeQuestion clearly points back to earlier history. "
+            "If activeQuestion alone is unclear or not safely answerable from the candidates, return no match. "
             "Return valid JSON only with keys bestIndex, similarityScore, and reason. "
             "bestIndex must be an integer index from the candidates list or null if none match. "
-            "similarityScore must be either a decimal between 0 and 1 or a percentage-style number between 0 and 100, "
-            "or null when there is no safe match."
-            "MAKE ABSOLUTE CERTAIN YOU ARE USING THE LAST MEANINGFUL SENTENCE OR QUESTION AS THE ACTUAL QUESTION FROM THE USER."
+            "similarityScore must be a number between 0 and 1, or between 0 and 100, or null when there is no safe match."
         ),
         user_prompt=json.dumps(
             {
-                "recentMessages": conversation.recent_messages,
+                "activeQuestion": conversation.active_question,
+                "activeMessages": conversation.active_messages,
                 "context": conversation.context,
                 "coreRule": "Use the last coherent sentence or question from recentMessages as the authoritative ask. recentMessages is the current debounce window only. context is previous processed history only and must not override it.",
                 "candidates": candidate_payload,
@@ -203,13 +222,11 @@ async def _openai_match(
     if not isinstance(best_index, int) or best_index < 0 or best_index >= len(candidates):
         raise RoutingError("OpenAI matcher returned an invalid candidate index")
 
-    normalized_score = _normalize_similarity_score(similarity_score)
-
     matched_entry = candidates[best_index]
     return MatcherResult(
         matcher="openai",
         entry=matched_entry,
-        score=normalized_score,
+        score=_normalize_similarity_score(similarity_score),
         reason=reason,
         metadata={"candidatesConsidered": len(candidate_payload)},
     )
@@ -269,10 +286,10 @@ async def _archive_processed_window(
     database: Database,
     session: SessionState,
     *,
-    combined_text: str,
+    active_question: str,
     now: datetime,
 ) -> SessionState:
-    """Move the processed active window into archived context and clear active messages."""
+    """Archive the processed active window while preserving any newer inbound messages."""
 
     if session.id is None:
         raise DatabaseError("ready session missing id")
@@ -286,18 +303,15 @@ async def _archive_processed_window(
         raise DatabaseError("failed to load session for archive merge")
 
     next_context = list(latest_session.context)
-    normalized_combined = combined_text.strip()
-    if normalized_combined:
-        next_context.append(normalized_combined)
+    if active_question.strip():
+        next_context.append(active_question.strip())
 
     processed_texts = [message.text.strip() for message in session.messages if message.text.strip()]
-    remaining_messages = list(latest_session.messages)
     latest_texts = [message.text.strip() for message in latest_session.messages if message.text.strip()]
+    remaining_messages = list(latest_session.messages)
 
-    if processed_texts and len(latest_texts) >= len(processed_texts):
-        processed_prefix = latest_texts[: len(processed_texts)]
-        if processed_prefix == processed_texts:
-            remaining_messages = latest_session.messages[len(processed_texts) :]
+    if processed_texts and latest_texts[: len(processed_texts)] == processed_texts:
+        remaining_messages = latest_session.messages[len(processed_texts) :]
 
     has_unprocessed_messages = any(message.text.strip() for message in remaining_messages)
 
@@ -523,10 +537,10 @@ async def run_workflow_b(
             _send_typing_indicator_safely(typing_attempt, settings=runtime_settings)
         )
         conversation = _build_conversation_view(acquired_session)
-        combined_text = conversation.combined_text
-        if not combined_text:
+        active_question = conversation.active_question
+        if not active_question:
             raise RoutingError("ready session has no searchable text")
-        active_query = conversation.recent_text or combined_text
+        combined_text = active_question
 
         tenant_document = await database.tenants.get_by_tenant_id(acquired_session.tenant_id)
         raw_domains = tenant_document.get("domains", []) if isinstance(tenant_document, Mapping) else []
@@ -539,7 +553,7 @@ async def run_workflow_b(
 
         try:
             domain_id = choose_domain(
-                active_query,
+                active_question,
                 raw_domains if isinstance(raw_domains, list) else [],
                 fallback_domain_id=fallback_domain_id,
             )
@@ -581,7 +595,7 @@ async def run_workflow_b(
             await _archive_processed_window(
                 database,
                 acquired_session,
-                combined_text=combined_text,
+                active_question=conversation.active_question,
                 now=current_time,
             )
             return WorkflowBResult(
@@ -616,11 +630,9 @@ async def run_workflow_b(
 
         if similarity_decision.should_answer and openai_match.entry is not None:
             matched_entry = openai_match.entry
-            assert matched_entry is not None
-            assert acquired_session is not None
             send_result = await _send_answer_reply(
                 identity,
-                openai_match.entry.answer,
+                matched_entry.answer,
                 provider_name=acquired_session.provider,
                 settings=runtime_settings,
             )
@@ -660,7 +672,7 @@ async def run_workflow_b(
             await _archive_processed_window(
                 database,
                 acquired_session,
-                combined_text=combined_text,
+                active_question=conversation.active_question,
                 now=current_time,
             )
             return WorkflowBResult(
@@ -715,7 +727,7 @@ async def run_workflow_b(
         await _archive_processed_window(
             database,
             acquired_session,
-            combined_text=combined_text,
+            active_question=conversation.active_question,
             now=current_time,
         )
         return WorkflowBResult(
