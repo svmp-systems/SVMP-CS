@@ -134,6 +134,23 @@ class MongoSessionStateRepository(SessionStateRepository):
         )
         return _to_model(SessionState, document)
 
+    async def acquire_ready_session_by_id(
+        self,
+        session_id: str,
+        now: datetime,
+    ) -> SessionState | None:
+        document = await self._collection.find_one_and_update(
+            {
+                "_id": _deserialize_id(session_id),
+                "status": "open",
+                "processing": False,
+                "debounceExpiresAt": {"$lte": now},
+            },
+            {"$set": {"processing": True, "updatedAt": now}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return _to_model(SessionState, document)
+
     async def delete_stale_sessions(self, before: datetime) -> int:
         result = await self._collection.delete_many({"updatedAt": {"$lt": before}})
         return result.deleted_count

@@ -97,6 +97,16 @@ class WhatsAppProvider(ABC):
 
         raise ValidationError(f"{self.name} does not accept form webhook payloads")
 
+    async def send_typing_indicator(
+        self,
+        *,
+        inbound_message_id: str | None,
+        settings: Settings,
+    ) -> None:
+        """Optionally send a provider-native typing indicator."""
+
+        return None
+
     @abstractmethod
     async def send_text(
         self,
@@ -353,6 +363,40 @@ class TwilioWhatsAppProvider(WhatsAppProvider):
             status="accepted",
             metadata={"response": body},
         )
+
+    async def send_typing_indicator(
+        self,
+        *,
+        inbound_message_id: str | None,
+        settings: Settings,
+    ) -> None:
+        account_sid = settings.TWILIO_ACCOUNT_SID
+        auth_token = settings.TWILIO_AUTH_TOKEN
+
+        if inbound_message_id is None or not inbound_message_id.strip():
+            return None
+        if account_sid is None or not account_sid.strip():
+            raise IntegrationError("TWILIO_ACCOUNT_SID is not configured")
+        if auth_token is None:
+            raise IntegrationError("TWILIO_AUTH_TOKEN is not configured")
+
+        url = "https://messaging.twilio.com/v2/Indicators/Typing.json"
+        form_data = {
+            "messageId": inbound_message_id.strip(),
+            "channel": "whatsapp",
+        }
+
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                url,
+                data=form_data,
+                auth=(account_sid, auth_token.get_secret_value()),
+            )
+            if response.is_error:
+                raise IntegrationError(
+                    f"Twilio typing indicator failed ({response.status_code}): {_integration_error_detail(response)}"
+                )
+        return None
 
 
 _PROVIDERS: dict[str, WhatsAppProvider] = {

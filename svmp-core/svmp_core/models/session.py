@@ -20,6 +20,7 @@ class MessageItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     text: str
+    external_message_id: str | None = Field(default=None, alias="externalMessageId")
     at: datetime = Field(default_factory=_utcnow)
 
 

@@ -80,6 +80,16 @@ class DemoSessionStateRepository(SessionStateRepository):
         selected.updated_at = now
         return selected.model_copy(deep=True)
 
+    async def acquire_ready_session_by_id(self, session_id: str, now: datetime) -> SessionState | None:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return None
+        if session.status != "open" or session.processing is not False or session.debounce_expires_at > now:
+            return None
+        session.processing = True
+        session.updated_at = now
+        return session.model_copy(deep=True)
+
     async def delete_stale_sessions(self, before: datetime) -> int:
         return 0
 

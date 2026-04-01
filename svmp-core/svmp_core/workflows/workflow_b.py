@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -35,6 +36,14 @@ def _utcnow() -> datetime:
     """Return a timezone-aware UTC timestamp."""
 
     return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class TypingIndicatorAttempt:
+    """Resolved typing-indicator target information for one processing run."""
+
+    provider_name: str
+    inbound_message_id: str | None
 
 
 def _strip_json_fence(value: str) -> str:
@@ -143,7 +152,7 @@ async def _openai_match(
                 "activeQuestion": conversation.active_question,
                 "activeMessages": conversation.active_messages,
                 "context": conversation.context,
-                "coreRule": "Use activeQuestion for decision making. Do not answer from context unless activeQuestion clearly refers back to it.",
+                "coreRule": "Use activeQuestion as the authoritative ask. activeMessages are the raw current debounce-window texts. context is previous processed history only and must not override activeQuestion.",
                 "candidates": candidate_payload,
             },
             ensure_ascii=True,
@@ -198,15 +207,13 @@ def _audit_metadata(
     latency_ms: int,
     reason: str,
     provider_name: str | None,
-    threshold: float | None = None,
-    similarity_score: float | None = None,
-    similarity_outcome: str = "not_evaluated",
-    candidate_found: bool = False,
-    domain_id: str | None = None,
-    matcher_metadata: Mapping[str, Any] | None = None,
+    threshold: float | None,
+    similarity_score: float | None,
+    similarity_outcome: str,
+    candidate_found: bool,
     extra: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Build consistent audit metadata for governance logs."""
+    """Build consistent governance metadata for Workflow B decisions."""
 
     metadata: dict[str, Any] = {
         "workflow": "workflow_b",
@@ -227,10 +234,6 @@ def _audit_metadata(
             "candidateFound": candidate_found,
         },
     }
-    if domain_id is not None:
-        metadata["domainId"] = domain_id
-    if matcher_metadata:
-        metadata.update(dict(matcher_metadata))
     if extra:
         metadata.update(dict(extra))
     return metadata
@@ -328,6 +331,105 @@ async def _send_answer_reply(
     )
 
 
+async def _send_typing_indicator(
+    attempt: TypingIndicatorAttempt,
+    *,
+    settings: Settings,
+) -> None:
+    """Send a provider-native typing indicator when supported."""
+
+    provider = get_whatsapp_provider(
+        settings=settings,
+        requested_provider=attempt.provider_name,
+    )
+    await provider.send_typing_indicator(
+        inbound_message_id=attempt.inbound_message_id,
+        settings=settings,
+    )
+
+
+def _prepare_typing_indicator_attempt(
+    session: SessionState,
+    *,
+    settings: Settings,
+) -> TypingIndicatorAttempt:
+    """Resolve the provider and latest inbound message id for typing UX."""
+
+    inbound_message_id = None
+    for message in reversed(session.messages):
+        if message.external_message_id is not None and message.external_message_id.strip():
+            inbound_message_id = message.external_message_id.strip()
+            break
+
+    return TypingIndicatorAttempt(
+        provider_name=session.provider or settings.WHATSAPP_PROVIDER,
+        inbound_message_id=inbound_message_id,
+    )
+
+
+def _typing_metadata_base(attempt: TypingIndicatorAttempt) -> dict[str, Any]:
+    """Return base audit metadata for a typing-indicator attempt."""
+
+    attempted = attempt.inbound_message_id is not None
+    return {
+        "typingIndicatorAttempted": attempted,
+        "typingIndicatorProvider": attempt.provider_name,
+        "typingIndicatorMessageId": attempt.inbound_message_id,
+    }
+
+
+async def _send_typing_indicator_safely(
+    attempt: TypingIndicatorAttempt,
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    """Send typing indicator without letting provider failures affect the workflow."""
+
+    base_metadata = _typing_metadata_base(attempt)
+    if not base_metadata["typingIndicatorAttempted"]:
+        return {
+            **base_metadata,
+            "typingIndicatorSent": False,
+            "typingIndicatorStatus": "skipped",
+            "typingIndicatorError": None,
+        }
+
+    try:
+        await _send_typing_indicator(attempt, settings=settings)
+    except Exception as exc:
+        return {
+            **base_metadata,
+            "typingIndicatorSent": False,
+            "typingIndicatorStatus": "error",
+            "typingIndicatorError": str(exc),
+        }
+
+    return {
+        **base_metadata,
+        "typingIndicatorSent": True,
+        "typingIndicatorStatus": "sent",
+        "typingIndicatorError": None,
+    }
+
+
+async def _collect_typing_indicator_metadata(
+    task: asyncio.Task[dict[str, Any]],
+    attempt: TypingIndicatorAttempt,
+) -> dict[str, Any]:
+    """Collect typing audit data without blocking the main workflow for long."""
+
+    done, _ = await asyncio.wait({task}, timeout=0.25)
+    if task in done:
+        return task.result()
+
+    return {
+        **_typing_metadata_base(attempt),
+        "typingIndicatorSent": False,
+        "typingIndicatorStatus": "pending",
+        "typingIndicatorError": None,
+    }
+
+
 @dataclass(frozen=True)
 class WorkflowBResult:
     """Summary of a Workflow B processing run."""
@@ -350,6 +452,7 @@ async def run_workflow_b(
     *,
     settings: Settings | None = None,
     now: datetime | None = None,
+    session_id: str | None = None,
 ) -> WorkflowBResult:
     """Process one ready session and choose answer vs escalation."""
 
@@ -359,7 +462,10 @@ async def run_workflow_b(
     acquired_session: SessionState | None = None
 
     try:
-        acquired_session = await database.session_state.acquire_ready_session(current_time)
+        if session_id is None:
+            acquired_session = await database.session_state.acquire_ready_session(current_time)
+        else:
+            acquired_session = await database.session_state.acquire_ready_session_by_id(session_id, current_time)
         if acquired_session is None:
             return WorkflowBResult(
                 processed=False,
@@ -382,6 +488,10 @@ async def run_workflow_b(
             tenant_id=acquired_session.tenant_id,
             client_id=acquired_session.client_id,
             user_id=acquired_session.user_id,
+        )
+        typing_attempt = _prepare_typing_indicator_attempt(acquired_session, settings=runtime_settings)
+        typing_task = asyncio.create_task(
+            _send_typing_indicator_safely(typing_attempt, settings=runtime_settings)
         )
         conversation = _build_conversation_view(acquired_session)
         active_question = conversation.active_question
@@ -413,6 +523,7 @@ async def run_workflow_b(
                 combined_text,
                 reason="domain_unresolved",
             )
+            typing_metadata = await _collect_typing_indicator_metadata(typing_task, typing_attempt)
             log = build_escalated_log(
                 identity,
                 combined_text,
@@ -429,9 +540,11 @@ async def run_workflow_b(
                     candidate_found=False,
                     extra={
                         "target": escalation.target.value,
+                        "reason": "domain_unresolved",
                         "activeQuestion": conversation.active_question,
                         "activeMessages": conversation.active_messages,
                         "context": conversation.context,
+                        **typing_metadata,
                     },
                 ),
                 timestamp=current_time,
@@ -481,6 +594,7 @@ async def run_workflow_b(
                 provider_name=acquired_session.provider,
                 settings=runtime_settings,
             )
+            typing_metadata = await _collect_typing_indicator_metadata(typing_task, typing_attempt)
             log = build_answered_log(
                 identity,
                 combined_text,
@@ -497,13 +611,13 @@ async def run_workflow_b(
                     similarity_score=similarity_decision.score,
                     similarity_outcome=similarity_decision.outcome.value,
                     candidate_found=True,
-                    domain_id=domain_id,
-                    matcher_metadata=matcher_metadata,
                     extra={
+                        "domainId": domain_id,
                         "activeQuestion": conversation.active_question,
                         "activeMessages": conversation.active_messages,
                         "context": conversation.context,
-                        "matchedQuestion": matched_entry.question,
+                        **typing_metadata,
+                        **matcher_metadata,
                         "delivery": {
                             "provider": send_result.provider,
                             "status": send_result.status,
@@ -540,6 +654,7 @@ async def run_workflow_b(
             reason=similarity_decision.reason,
             metadata={"domainId": domain_id},
         )
+        typing_metadata = await _collect_typing_indicator_metadata(typing_task, typing_attempt)
         log = build_escalated_log(
             identity,
             combined_text,
@@ -555,14 +670,15 @@ async def run_workflow_b(
                 similarity_score=similarity_decision.score,
                 similarity_outcome=similarity_decision.outcome.value,
                 candidate_found=openai_match.entry is not None,
-                domain_id=domain_id,
-                matcher_metadata=matcher_metadata,
                 extra={
-                    "target": escalation.target.value,
+                    "domainId": domain_id,
                     "activeQuestion": conversation.active_question,
                     "activeMessages": conversation.active_messages,
                     "context": conversation.context,
-                    "matchedQuestion": openai_match.entry.question if openai_match.entry is not None else None,
+                    "reason": similarity_decision.reason,
+                    "target": escalation.target.value,
+                    **typing_metadata,
+                    **matcher_metadata,
                 },
             ),
             timestamp=current_time,

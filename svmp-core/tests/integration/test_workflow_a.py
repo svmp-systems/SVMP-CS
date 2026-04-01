@@ -66,6 +66,9 @@ class InMemorySessionStateRepository(SessionStateRepository):
     async def acquire_ready_session(self, now: datetime) -> SessionState | None:
         raise NotImplementedError
 
+    async def acquire_ready_session_by_id(self, session_id: str, now: datetime) -> SessionState | None:
+        raise NotImplementedError
+
     async def delete_stale_sessions(self, before: datetime) -> int:
         raise NotImplementedError
 

@@ -255,6 +255,20 @@ async def test_session_repository_round_trip_and_ready_acquisition() -> None:
     assert reopened is not None
     assert reopened.status == "open"
 
+    acquired_specific = await database.session_state.acquire_ready_session_by_id(created.id, now)
+    assert acquired_specific is not None
+    assert acquired_specific.id == created.id
+    assert acquired_specific.processing is True
+
+    reset = await database.session_state.update_by_id(
+        created.id,
+        {
+            "processing": False,
+            "debounce_expires_at": now - timedelta(seconds=2),
+        },
+    )
+    assert reset is not None
+
     acquired = await database.session_state.acquire_ready_session(now)
     assert acquired is not None
     assert acquired.id == created.id

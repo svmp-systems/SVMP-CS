@@ -64,6 +64,9 @@ class InMemorySessionStateRepository(SessionStateRepository):
     async def acquire_ready_session(self, now):
         return None
 
+    async def acquire_ready_session_by_id(self, session_id, now):
+        return None
+
     async def delete_stale_sessions(self, before):
         return 0
 
@@ -184,7 +187,6 @@ def test_create_app_boots_and_wires_lifecycle_dependencies() -> None:
         assert response.json() == {"status": "ok"}
         assert database.connected is True
         assert scheduler.started is True
-        assert "workflow_b" in scheduler.jobs
         assert "workflow_c" in scheduler.jobs
 
     assert database.disconnected is True

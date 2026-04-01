@@ -41,7 +41,11 @@ async def run_workflow_a(
         raise ValidationError("invalid inbound identity") from exc
 
     debounce_expires_at = current_time + timedelta(milliseconds=runtime_settings.DEBOUNCE_MS)
-    new_message = MessageItem(text=normalized_text, at=current_time)
+    new_message = MessageItem(
+        text=normalized_text,
+        externalMessageId=payload.external_message_id,
+        at=current_time,
+    )
 
     existing_session = await database.session_state.get_by_identity(*identity.as_tuple())
 

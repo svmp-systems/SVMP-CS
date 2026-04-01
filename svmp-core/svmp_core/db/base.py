@@ -41,6 +41,14 @@ class SessionStateRepository(ABC):
         """Atomically acquire one ready session for Workflow B processing."""
 
     @abstractmethod
+    async def acquire_ready_session_by_id(
+        self,
+        session_id: str,
+        now: datetime,
+    ) -> SessionState | None:
+        """Atomically acquire a specific ready session for Workflow B processing."""
+
+    @abstractmethod
     async def delete_stale_sessions(self, before: datetime) -> int:
         """Delete stale sessions and return the number removed."""
 

@@ -13,7 +13,7 @@ from svmp_core.db.base import Database
 from svmp_core.db.mongo import MongoDatabase
 from svmp_core.logger import configure_logging
 from svmp_core.routes import build_webhook_router
-from svmp_core.workflows import run_workflow_b, run_workflow_c
+from svmp_core.workflows import run_workflow_c
 
 
 def _job_exists(scheduler: Any, job_id: str) -> bool:
@@ -35,17 +35,7 @@ def _register_scheduler_jobs(
     database: Database,
     settings: Settings,
 ) -> None:
-    """Attach Workflow B and Workflow C jobs to the runtime scheduler."""
-
-    if not _job_exists(scheduler, "workflow_b"):
-        scheduler.add_job(
-            run_workflow_b,
-            trigger="interval",
-            seconds=settings.WORKFLOW_B_INTERVAL_SECONDS,
-            id="workflow_b",
-            replace_existing=True,
-            kwargs={"database": database, "settings": settings},
-        )
+    """Attach recurring background jobs to the runtime scheduler."""
 
     if not _job_exists(scheduler, "workflow_c"):
         scheduler.add_job(
