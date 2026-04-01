@@ -4,11 +4,11 @@
     {
       "domainId": "general",
       "name": "General",
-      "description": "Questions about fragrances, pricing, offers, stock, shipping, and brand information",
-      "keywords": ["perfume", "fragrance", "price", "shipping", "stock", "contact", "offer", "discount"]
+      "description": "Questions about STAY Parfums products, pricing, shipping, availability, brand details, and support.",
+      "keywords": ["perfume", "fragrance", "price", "shipping", "stock", "contact", "offer"]
     }
   ],
-  "tags": ["demo", "whatsapp", "fragrance", "retail"],
+  "tags": ["demo", "whatsapp", "stay"],
   "channels": {
     "meta": {
       "phoneNumberIds": ["replace-with-meta-phone-number-id"],

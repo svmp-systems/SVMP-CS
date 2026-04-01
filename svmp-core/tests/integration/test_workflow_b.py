@@ -194,11 +194,8 @@ def _ready_session(
         processing=False,
         context=list(context or []),
         messages=[
-            MessageItem(
-                text=message_text,
-                at=datetime(2026, 3, 30, 9, 55 + index, tzinfo=timezone.utc),
-            )
-            for index, message_text in enumerate(message_texts)
+            MessageItem(text=message_text, at=datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc))
+            for message_text in message_texts
         ],
         createdAt=datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc),
         updatedAt=datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc),
@@ -385,10 +382,10 @@ async def test_workflow_b_normalizes_percentage_style_similarity_scores(
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_prompt_prioritizes_last_coherent_sentence(
+async def test_workflow_b_prompt_uses_explicit_active_question_and_background_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Matcher prompt should separate older context and let the model infer the latest sentence."""
+    """Matcher prompt should use activeQuestion explicitly and keep context secondary."""
 
     captured: dict[str, Any] = {}
 
@@ -428,22 +425,19 @@ async def test_workflow_b_prompt_prioritizes_last_coherent_sentence(
         now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
     )
 
-    assert "recentMessages as the full current debounce window" in captured["system_prompt"]
-    assert "recentMessages as the full current debounce window" in captured["system_prompt"]
-    assert "recentMessages contains only the customer messages collected in the current debounce window" in captured["system_prompt"]
-    assert "context contains text from previous processed windows" in captured["system_prompt"]
-    assert "Infer the LAST COHERENT SENTENCE or question from recentMessages" in captured["system_prompt"]
-    assert '"recentMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
+    assert "activeQuestion is the only text that should drive candidate selection" in captured["system_prompt"]
+    assert "context is archived history from previous processed windows" in captured["system_prompt"]
+    assert '"activeQuestion": "What does Niyomilan do? What is it trying to solve? Why is it called Niyomilan?"' in captured["user_prompt"]
+    assert '"activeMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
     assert '"context": "Hi there"' in captured["user_prompt"]
-    assert '"recentText": "What does Niyomilan do? What is it trying to solve? Why is it called Niyomilan?"' in captured["user_prompt"]
-    assert '"coreRule": "Use the last coherent sentence or question from recentMessages as the authoritative ask. recentMessages is the current debounce window only. context is previous processed history only and must not override it."' in captured["user_prompt"]
+    assert '"combinedText"' not in captured["user_prompt"]
 
 
 @pytest.mark.asyncio
-async def test_workflow_b_uses_last_sentence_from_recent_window_for_matching(
+async def test_workflow_b_uses_active_question_for_matching_and_archives_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The model should receive the last three texts untouched plus older context."""
+    """The model should receive the active question explicitly and archive that same window."""
 
     captured: dict[str, Any] = {}
 
@@ -491,8 +485,8 @@ async def test_workflow_b_uses_last_sentence_from_recent_window_for_matching(
 
     assert result.decision == GovernanceDecision.ANSWERED
     assert result.answer_supplied == "It comes from Sanskrit roots describing connection and purposeful engagement."
-    assert '"recentMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
-    assert '"recentText": "What does Niyomilan do? What is it trying to solve? Why is it called Niyomilan?"' in captured["user_prompt"]
+    assert '"activeQuestion": "What does Niyomilan do? What is it trying to solve? Why is it called Niyomilan?"' in captured["user_prompt"]
+    assert '"activeMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
     assert '"context": "Older topic that should become context"' in captured["user_prompt"]
 
     session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
@@ -568,6 +562,53 @@ async def test_workflow_b_preserves_new_messages_that_arrive_during_processing(
     assert [message.text for message in session.messages] == ["Do you offer free shipping?"]
     assert session.context == ["What size are Stay bottles?"]
     assert session.processing is False
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_sends_explicit_active_question_and_background_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matcher payload should use activeQuestion explicitly and never send combinedText."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_generate_completion(**kwargs) -> str:
+        captured["system_prompt"] = kwargs["system_prompt"]
+        captured["user_prompt"] = kwargs["user_prompt"]
+        return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+
+    database = ProcessingDatabase(
+        sessions=[
+            _ready_session(
+                text="Are your perfumes for men, women, or unisex wear?",
+                context=["What size are stay perfume bottles ?"],
+            )
+        ],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="Are your perfumes for men, women, or unisex wear?",
+                answer="We offer men's, women's, and unisex fragrances.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    await run_workflow_b(
+        database,
+        settings=_settings(),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert "activeQuestion is the only text that should drive candidate selection" in captured["system_prompt"]
+    assert '"activeQuestion": "Are your perfumes for men, women, or unisex wear?"' in captured["user_prompt"]
+    assert '"activeMessages": ["Are your perfumes for men, women, or unisex wear?"]' in captured["user_prompt"]
+    assert '"context": "What size are stay perfume bottles ?"' in captured["user_prompt"]
+    assert '"combinedText"' not in captured["user_prompt"]
 
 
 @pytest.mark.asyncio

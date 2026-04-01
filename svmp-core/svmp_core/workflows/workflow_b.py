@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from time import perf_counter
 from typing import Any
 
 from svmp_core.config import Settings, get_settings, get_tenant_confidence_threshold
@@ -31,56 +31,10 @@ from svmp_core.models import (
 )
 
 
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
-
-
 def _utcnow() -> datetime:
     """Return a timezone-aware UTC timestamp."""
 
     return datetime.now(timezone.utc)
-
-
-def _tokenize(value: str) -> set[str]:
-    """Split free text into lowercase searchable tokens."""
-
-    return set(_TOKEN_PATTERN.findall(value.lower()))
-
-
-def _combine_messages(session: SessionState) -> str:
-    """Collapse buffered message fragments into one processing string."""
-
-    return " ".join(message.text.strip() for message in session.messages if message.text.strip()).strip()
-
-
-@dataclass(frozen=True)
-class ConversationView:
-    """Derived conversation inputs for matching and routing."""
-
-    combined_text: str
-    recent_messages: list[str]
-    context: str
-    recent_text: str
-
-
-def _build_conversation_view(session: SessionState) -> ConversationView:
-    """Build matcher inputs from archived context plus the active debounce window."""
-
-    messages = [message.text.strip() for message in session.messages if message.text.strip()]
-    combined_text = " ".join(messages).strip()
-    recent_messages = list(messages)
-    recent_text = " ".join(recent_messages).strip()
-    context_text = " ".join(
-        segment.strip()
-        for segment in session.context
-        if isinstance(segment, str) and segment.strip()
-    ).strip()
-
-    return ConversationView(
-        combined_text=combined_text,
-        recent_messages=recent_messages,
-        context=context_text,
-        recent_text=recent_text,
-    )
 
 
 def _strip_json_fence(value: str) -> str:
@@ -103,6 +57,32 @@ class MatcherResult:
     score: float | None
     reason: str
     metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ConversationView:
+    """Derived active-question and archived context inputs."""
+
+    active_messages: list[str]
+    active_question: str
+    context: str
+
+
+def _build_conversation_view(session: SessionState) -> ConversationView:
+    """Build the active question from current-window messages and archived context."""
+
+    active_messages = [message.text.strip() for message in session.messages if message.text.strip()]
+    active_question = " ".join(active_messages).strip()
+    context = " ".join(
+        item.strip()
+        for item in session.context
+        if isinstance(item, str) and item.strip()
+    ).strip()
+    return ConversationView(
+        active_messages=active_messages,
+        active_question=active_question,
+        context=context,
+    )
 
 
 def _normalize_similarity_score(raw_score: Any) -> float:
@@ -150,25 +130,20 @@ async def _openai_match(
     response = await generate_completion(
         system_prompt=(
             "You rank FAQ candidates for customer-support automation. "
-            "The core system sends recentMessages as the full current debounce window and context as older history only. do NOT use context for the actual answer, use it only to provide session background. "
-            "recentMessages contains only the customer messages collected in the current debounce window before this run. "
-            "context contains text from previous processed windows and is supporting context only. "
-            "Infer the LAST COHERENT SENTENCE or question from recentMessages and USE ONLY LAST COHERENT SENTENCE as the authoritative ask. "
-            "Never let context override the last coherent sentence from recentMessages. "
-            "If that final coherent ask is unclear, unrelated to the candidates, or not safely answerable, return no match. "
+            "activeQuestion is the only text that should drive candidate selection and answer decision making. "
+            "context is archived history from previous processed windows and must never override activeQuestion. "
+            "Use context only to clarify references when activeQuestion clearly points back to earlier history. "
+            "If activeQuestion alone is unclear or not safely answerable from the candidates, return no match. "
             "Return valid JSON only with keys bestIndex, similarityScore, and reason. "
             "bestIndex must be an integer index from the candidates list or null if none match. "
-            "similarityScore must be either a decimal between 0 and 1 or a percentage-style number between 0 and 100, "
-            "or null when there is no safe match."
-            "MAKE ABSOLUTE CERTAIN YOU ARE USING THE LAST MEANINGFUL SENTENCE OR QUESTION AS THE ACTUAL QUESTION FROM THE USER."
+            "similarityScore must be a number between 0 and 1, or between 0 and 100, or null when there is no safe match."
         ),
         user_prompt=json.dumps(
             {
-                "recentMessages": conversation.recent_messages,
+                "activeQuestion": conversation.active_question,
+                "activeMessages": conversation.active_messages,
                 "context": conversation.context,
-                "recentText": conversation.recent_text,
-                "combinedText": conversation.combined_text,
-                "coreRule": "Use the last coherent sentence or question from recentMessages as the authoritative ask. recentMessages is the current debounce window only. context is previous processed history only and must not override it.",
+                "coreRule": "Use activeQuestion for decision making. Do not answer from context unless activeQuestion clearly refers back to it.",
                 "candidates": candidate_payload,
             },
             ensure_ascii=True,
@@ -195,13 +170,11 @@ async def _openai_match(
     if not isinstance(best_index, int) or best_index < 0 or best_index >= len(candidates):
         raise RoutingError("OpenAI matcher returned an invalid candidate index")
 
-    normalized_score = _normalize_similarity_score(similarity_score)
-
     matched_entry = candidates[best_index]
     return MatcherResult(
         matcher="openai",
         entry=matched_entry,
-        score=normalized_score,
+        score=_normalize_similarity_score(similarity_score),
         reason=reason,
         metadata={"candidatesConsidered": len(candidate_payload)},
     )
@@ -217,14 +190,60 @@ def _matcher_metadata(result: MatcherResult) -> dict[str, Any]:
     }
 
 
+def _audit_metadata(
+    *,
+    identity: IdentityFrame,
+    session: SessionState,
+    decision: str,
+    latency_ms: int,
+    reason: str,
+    provider_name: str | None,
+    threshold: float | None = None,
+    similarity_score: float | None = None,
+    similarity_outcome: str = "not_evaluated",
+    candidate_found: bool = False,
+    domain_id: str | None = None,
+    matcher_metadata: Mapping[str, Any] | None = None,
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build consistent audit metadata for governance logs."""
+
+    metadata: dict[str, Any] = {
+        "workflow": "workflow_b",
+        "decision": decision,
+        "decisionReason": reason,
+        "latencyMs": latency_ms,
+        "sessionId": session.id,
+        "provider": provider_name,
+        "identity": {
+            "tenantId": identity.tenant_id,
+            "clientId": identity.client_id,
+            "userId": identity.user_id,
+        },
+        "similarity": {
+            "score": similarity_score,
+            "threshold": threshold,
+            "outcome": similarity_outcome,
+            "candidateFound": candidate_found,
+        },
+    }
+    if domain_id is not None:
+        metadata["domainId"] = domain_id
+    if matcher_metadata:
+        metadata.update(dict(matcher_metadata))
+    if extra:
+        metadata.update(dict(extra))
+    return metadata
+
+
 async def _archive_processed_window(
     database: Database,
     session: SessionState,
     *,
-    combined_text: str,
+    active_question: str,
     now: datetime,
 ) -> SessionState:
-    """Move the processed active window into archived context and clear active messages."""
+    """Archive the processed active window while preserving any newer inbound messages."""
 
     if session.id is None:
         raise DatabaseError("ready session missing id")
@@ -238,18 +257,15 @@ async def _archive_processed_window(
         raise DatabaseError("failed to load session for archive merge")
 
     next_context = list(latest_session.context)
-    normalized_combined = combined_text.strip()
-    if normalized_combined:
-        next_context.append(normalized_combined)
+    if active_question.strip():
+        next_context.append(active_question.strip())
 
     processed_texts = [message.text.strip() for message in session.messages if message.text.strip()]
-    remaining_messages = list(latest_session.messages)
     latest_texts = [message.text.strip() for message in latest_session.messages if message.text.strip()]
+    remaining_messages = list(latest_session.messages)
 
-    if processed_texts and len(latest_texts) >= len(processed_texts):
-        processed_prefix = latest_texts[: len(processed_texts)]
-        if processed_prefix == processed_texts:
-            remaining_messages = latest_session.messages[len(processed_texts) :]
+    if processed_texts and latest_texts[: len(processed_texts)] == processed_texts:
+        remaining_messages = latest_session.messages[len(processed_texts) :]
 
     has_unprocessed_messages = any(message.text.strip() for message in remaining_messages)
 
@@ -339,6 +355,7 @@ async def run_workflow_b(
 
     runtime_settings = settings or get_settings()
     current_time = now or _utcnow()
+    started_at = perf_counter()
     acquired_session: SessionState | None = None
 
     try:
@@ -367,10 +384,10 @@ async def run_workflow_b(
             user_id=acquired_session.user_id,
         )
         conversation = _build_conversation_view(acquired_session)
-        combined_text = conversation.combined_text
-        if not combined_text:
+        active_question = conversation.active_question
+        if not active_question:
             raise RoutingError("ready session has no searchable text")
-        active_query = conversation.recent_text or combined_text
+        combined_text = active_question
 
         tenant_document = await database.tenants.get_by_tenant_id(acquired_session.tenant_id)
         raw_domains = tenant_document.get("domains", []) if isinstance(tenant_document, Mapping) else []
@@ -383,7 +400,7 @@ async def run_workflow_b(
 
         try:
             domain_id = choose_domain(
-                active_query,
+                active_question,
                 raw_domains if isinstance(raw_domains, list) else [],
                 fallback_domain_id=fallback_domain_id,
             )
@@ -399,20 +416,31 @@ async def run_workflow_b(
             log = build_escalated_log(
                 identity,
                 combined_text,
-                metadata={
-                    "reason": "domain_unresolved",
-                    "target": escalation.target.value,
-                    "recentMessages": conversation.recent_messages,
-                    "recentText": conversation.recent_text,
-                    "context": conversation.context,
-                },
+                metadata=_audit_metadata(
+                    identity=identity,
+                    session=acquired_session,
+                    decision=GovernanceDecision.ESCALATED.value,
+                    latency_ms=int((perf_counter() - started_at) * 1000),
+                    reason=escalation.reason,
+                    provider_name=acquired_session.provider,
+                    threshold=threshold,
+                    similarity_score=None,
+                    similarity_outcome="not_evaluated",
+                    candidate_found=False,
+                    extra={
+                        "target": escalation.target.value,
+                        "activeQuestion": conversation.active_question,
+                        "activeMessages": conversation.active_messages,
+                        "context": conversation.context,
+                    },
+                ),
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
             await _archive_processed_window(
                 database,
                 acquired_session,
-                combined_text=combined_text,
+                active_question=conversation.active_question,
                 now=current_time,
             )
             return WorkflowBResult(
@@ -447,11 +475,9 @@ async def run_workflow_b(
 
         if similarity_decision.should_answer and openai_match.entry is not None:
             matched_entry = openai_match.entry
-            assert matched_entry is not None
-            assert acquired_session is not None
             send_result = await _send_answer_reply(
                 identity,
-                openai_match.entry.answer,
+                matched_entry.answer,
                 provider_name=acquired_session.provider,
                 settings=runtime_settings,
             )
@@ -460,25 +486,38 @@ async def run_workflow_b(
                 combined_text,
                 similarity_score=similarity_decision.score or 0.0,
                 answer_supplied=matched_entry.answer,
-                metadata={
-                    "domainId": domain_id,
-                    "recentMessages": conversation.recent_messages,
-                    "recentText": conversation.recent_text,
-                    "context": conversation.context,
-                    **matcher_metadata,
-                    "delivery": {
-                        "provider": send_result.provider,
-                        "status": send_result.status,
-                        "externalMessageId": send_result.external_message_id,
+                metadata=_audit_metadata(
+                    identity=identity,
+                    session=acquired_session,
+                    decision=GovernanceDecision.ANSWERED.value,
+                    latency_ms=int((perf_counter() - started_at) * 1000),
+                    reason=similarity_decision.reason,
+                    provider_name=acquired_session.provider,
+                    threshold=threshold,
+                    similarity_score=similarity_decision.score,
+                    similarity_outcome=similarity_decision.outcome.value,
+                    candidate_found=True,
+                    domain_id=domain_id,
+                    matcher_metadata=matcher_metadata,
+                    extra={
+                        "activeQuestion": conversation.active_question,
+                        "activeMessages": conversation.active_messages,
+                        "context": conversation.context,
+                        "matchedQuestion": matched_entry.question,
+                        "delivery": {
+                            "provider": send_result.provider,
+                            "status": send_result.status,
+                            "externalMessageId": send_result.external_message_id,
+                        },
                     },
-                },
+                ),
                 timestamp=current_time,
             )
             await database.governance_logs.create(log)
             await _archive_processed_window(
                 database,
                 acquired_session,
-                combined_text=combined_text,
+                active_question=conversation.active_question,
                 now=current_time,
             )
             return WorkflowBResult(
@@ -505,22 +544,34 @@ async def run_workflow_b(
             identity,
             combined_text,
             similarity_score=similarity_decision.score,
-            metadata={
-                "domainId": domain_id,
-                "recentMessages": conversation.recent_messages,
-                "recentText": conversation.recent_text,
-                "context": conversation.context,
-                "reason": similarity_decision.reason,
-                "target": escalation.target.value,
-                **matcher_metadata,
-            },
+            metadata=_audit_metadata(
+                identity=identity,
+                session=acquired_session,
+                decision=GovernanceDecision.ESCALATED.value,
+                latency_ms=int((perf_counter() - started_at) * 1000),
+                reason=similarity_decision.reason,
+                provider_name=acquired_session.provider,
+                threshold=threshold,
+                similarity_score=similarity_decision.score,
+                similarity_outcome=similarity_decision.outcome.value,
+                candidate_found=openai_match.entry is not None,
+                domain_id=domain_id,
+                matcher_metadata=matcher_metadata,
+                extra={
+                    "target": escalation.target.value,
+                    "activeQuestion": conversation.active_question,
+                    "activeMessages": conversation.active_messages,
+                    "context": conversation.context,
+                    "matchedQuestion": openai_match.entry.question if openai_match.entry is not None else None,
+                },
+            ),
             timestamp=current_time,
         )
         await database.governance_logs.create(log)
         await _archive_processed_window(
             database,
             acquired_session,
-            combined_text=combined_text,
+            active_question=conversation.active_question,
             now=current_time,
         )
         return WorkflowBResult(
