@@ -38,55 +38,12 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _tokenize(value: str) -> set[str]:
-    """Split free text into lowercase searchable tokens."""
-
-    return set(_TOKEN_PATTERN.findall(value.lower()))
-
-
-def _combine_messages(session: SessionState) -> str:
-    """Collapse buffered message fragments into one processing string."""
-
-    return " ".join(message.text.strip() for message in session.messages if message.text.strip()).strip()
-
-
-@dataclass(frozen=True)
-class ConversationView:
-    """Derived conversation inputs for matching and routing."""
-
-    combined_text: str
-    recent_messages: list[str]
-    context: str
-    recent_text: str
-
-
 @dataclass(frozen=True)
 class TypingIndicatorAttempt:
     """Resolved typing-indicator target information for one processing run."""
 
     provider_name: str
     inbound_message_id: str | None
-
-
-def _build_conversation_view(session: SessionState) -> ConversationView:
-    """Build matcher inputs from archived context plus the active debounce window."""
-
-    messages = [message.text.strip() for message in session.messages if message.text.strip()]
-    combined_text = " ".join(messages).strip()
-    recent_messages = list(messages)
-    recent_text = " ".join(recent_messages).strip()
-    context_text = " ".join(
-        segment.strip()
-        for segment in session.context
-        if isinstance(segment, str) and segment.strip()
-    ).strip()
-
-    return ConversationView(
-        combined_text=combined_text,
-        recent_messages=recent_messages,
-        context=context_text,
-        recent_text=recent_text,
-    )
 
 
 def _strip_json_fence(value: str) -> str:
@@ -195,7 +152,7 @@ async def _openai_match(
                 "activeQuestion": conversation.active_question,
                 "activeMessages": conversation.active_messages,
                 "context": conversation.context,
-                "coreRule": "Use the last coherent sentence or question from recentMessages as the authoritative ask. recentMessages is the current debounce window only. context is previous processed history only and must not override it.",
+                "coreRule": "Use activeQuestion as the authoritative ask. activeMessages are the raw current debounce-window texts. context is previous processed history only and must not override activeQuestion.",
                 "candidates": candidate_payload,
             },
             ensure_ascii=True,
@@ -584,7 +541,8 @@ async def run_workflow_b(
                     extra={
                         "target": escalation.target.value,
                         "reason": "domain_unresolved",
-                        "recentMessages": conversation.recent_messages,
+                        "activeQuestion": conversation.active_question,
+                        "activeMessages": conversation.active_messages,
                         "context": conversation.context,
                         **typing_metadata,
                     },
@@ -655,7 +613,8 @@ async def run_workflow_b(
                     candidate_found=True,
                     extra={
                         "domainId": domain_id,
-                        "recentMessages": conversation.recent_messages,
+                        "activeQuestion": conversation.active_question,
+                        "activeMessages": conversation.active_messages,
                         "context": conversation.context,
                         **typing_metadata,
                         **matcher_metadata,
@@ -713,7 +672,8 @@ async def run_workflow_b(
                 candidate_found=openai_match.entry is not None,
                 extra={
                     "domainId": domain_id,
-                    "recentMessages": conversation.recent_messages,
+                    "activeQuestion": conversation.active_question,
+                    "activeMessages": conversation.active_messages,
                     "context": conversation.context,
                     "reason": similarity_decision.reason,
                     "target": escalation.target.value,

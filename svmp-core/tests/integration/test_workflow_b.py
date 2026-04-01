@@ -449,7 +449,7 @@ async def test_workflow_b_prompt_uses_explicit_active_question_and_background_co
     assert '"activeMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
     assert '"context": "Hi there"' in captured["user_prompt"]
     assert '"recentText"' not in captured["user_prompt"]
-    assert '"coreRule": "Use the last coherent sentence or question from recentMessages as the authoritative ask. recentMessages is the current debounce window only. context is previous processed history only and must not override it."' in captured["user_prompt"]
+    assert '"coreRule": "Use activeQuestion as the authoritative ask. activeMessages are the raw current debounce-window texts. context is previous processed history only and must not override activeQuestion."' in captured["user_prompt"]
 
 
 @pytest.mark.asyncio
@@ -504,7 +504,8 @@ async def test_workflow_b_uses_active_question_for_matching_and_archives_it(
 
     assert result.decision == GovernanceDecision.ANSWERED
     assert result.answer_supplied == "It comes from Sanskrit roots describing connection and purposeful engagement."
-    assert '"recentMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
+    assert '"activeQuestion": "What does Niyomilan do? What is it trying to solve? Why is it called Niyomilan?"' in captured["user_prompt"]
+    assert '"activeMessages": ["What does Niyomilan do?", "What is it trying to solve?", "Why is it called Niyomilan?"]' in captured["user_prompt"]
     assert '"recentText"' not in captured["user_prompt"]
     assert '"context": "Older topic that should become context"' in captured["user_prompt"]
 
