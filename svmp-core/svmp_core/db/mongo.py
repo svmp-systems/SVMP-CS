@@ -142,6 +142,22 @@ class MongoSessionStateRepository(SessionStateRepository):
                 "status": "open",
                 "processing": False,
                 "escalate": {"$ne": True},
+                "pendingEscalation": True,
+                "pendingEscalationExpiresAt": {"$lte": now},
+            },
+            {"$set": {"processing": True, "updatedAt": now}},
+            sort=[("pendingEscalationExpiresAt", ASCENDING)],
+            return_document=ReturnDocument.AFTER,
+        )
+        if document is not None:
+            return _to_model(SessionState, document)
+
+        document = await self._collection.find_one_and_update(
+            {
+                "status": "open",
+                "processing": False,
+                "escalate": {"$ne": True},
+                "pendingEscalation": {"$ne": True},
                 "debounceExpiresAt": {"$lte": now},
             },
             {"$set": {"processing": True, "updatedAt": now}},
@@ -343,7 +359,13 @@ class MongoDatabase(Database):
         )
         await _create_or_replace_named_index(
             session_collection,
-            [("processing", ASCENDING), ("escalate", ASCENDING), ("debounceExpiresAt", ASCENDING)],
+            [
+                ("processing", ASCENDING),
+                ("escalate", ASCENDING),
+                ("pendingEscalation", ASCENDING),
+                ("pendingEscalationExpiresAt", ASCENDING),
+                ("debounceExpiresAt", ASCENDING),
+            ],
             name="session_ready_lookup",
         )
 

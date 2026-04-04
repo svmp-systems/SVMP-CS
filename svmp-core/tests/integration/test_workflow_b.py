@@ -59,12 +59,29 @@ class ProcessingSessionRepository(SessionStateRepository):
         return updated.model_copy(deep=True)
 
     async def acquire_ready_session(self, now: datetime) -> SessionState | None:
+        pending_sessions = [
+            session
+            for session in self._sessions.values()
+            if session.status == "open"
+            and session.processing is False
+            and session.escalate is False
+            and session.pending_escalation is True
+            and session.pending_escalation_expires_at is not None
+            and session.pending_escalation_expires_at <= now
+        ]
+        if pending_sessions:
+            selected = sorted(pending_sessions, key=lambda session: session.pending_escalation_expires_at)[0]
+            selected.processing = True
+            selected.updated_at = now
+            return selected.model_copy(deep=True)
+
         ready_sessions = [
             session
             for session in self._sessions.values()
             if session.status == "open"
             and session.processing is False
             and session.escalate is False
+            and session.pending_escalation is False
             and session.debounce_expires_at <= now
         ]
         if not ready_sessions:
@@ -305,7 +322,7 @@ async def test_workflow_b_answers_high_confidence_informational_query(
 async def test_workflow_b_escalates_low_confidence_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Workflow B should escalate when OpenAI returns a weak match."""
+    """Low-confidence matches should enter grace first, then escalate if no new message arrives."""
 
     async def fake_generate_completion(**kwargs) -> str:
         return '{"bestIndex": 0, "similarityScore": 0.21, "reason": "candidate is weakly related"}'
@@ -326,20 +343,43 @@ async def test_workflow_b_escalates_low_confidence_query(
         tenants=[_tenant(threshold=0.75)],
     )
 
-    result = await run_workflow_b(
+    first_result = await run_workflow_b(
         database,
-        settings=_settings(),
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
         now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
     )
 
-    assert result.processed is True
-    assert result.decision == GovernanceDecision.ESCALATED
-    assert result.answer_supplied is None
-    assert result.outbound_send_result is None
-    assert result.escalation_target is not None
-    assert result.matcher_used == "openai"
+    assert first_result.processed is True
+    assert first_result.decision is None
+    assert first_result.answer_supplied is None
+    assert first_result.outbound_send_result is None
+    assert first_result.escalation_target is not None
+    assert first_result.matcher_used == "openai"
 
     written_logs = database.governance_logs.logs
+    assert written_logs == []
+
+    pending_session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert pending_session is not None
+    assert pending_session.escalate is False
+    assert pending_session.pending_escalation is True
+    assert pending_session.pending_escalation_expires_at == datetime(2026, 3, 30, 10, 0, 5, tzinfo=timezone.utc)
+    assert pending_session.pending_escalation_metadata["reason"] == "score below threshold"
+    assert pending_session.pending_escalation_metadata["matchedQuestion"] == "What do you do?"
+
+    final_result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
+        now=datetime(2026, 3, 30, 10, 0, 6, tzinfo=timezone.utc),
+    )
+
+    assert final_result.processed is True
+    assert final_result.decision == GovernanceDecision.ESCALATED
+    assert final_result.answer_supplied is None
+    assert final_result.outbound_send_result is None
+    assert final_result.escalation_target is not None
+    assert final_result.matcher_used == "pending_escalation"
+
     assert len(written_logs) == 1
     assert written_logs[0].decision == GovernanceDecision.ESCALATED
     assert written_logs[0].metadata["matcherUsed"] == "openai"
@@ -354,16 +394,25 @@ async def test_workflow_b_escalates_low_confidence_query(
     }
     timing = written_logs[0].metadata["timing"]
     assert timing["messageWindow"]["lastMessageAt"] == "2026-03-30T09:55:00+00:00"
-    assert timing["messageWindow"]["durationsMs"]["debounceExpiryToWorkflowBStart"] == 60000
-    assert "workflow_b.similarity.evaluate" in {
+    assert timing["messageWindow"]["pendingEscalationStartedAt"] == "2026-03-30T10:00:00+00:00"
+    assert timing["messageWindow"]["pendingEscalationExpiresAt"] == "2026-03-30T10:00:05+00:00"
+    assert timing["messageWindow"]["durationsMs"]["debounceExpiryToWorkflowBStart"] == 66000
+    assert timing["messageWindow"]["durationsMs"]["pendingEscalationStartToExpiry"] == 5000
+    assert timing["messageWindow"]["durationsMs"]["pendingEscalationExpiryToWorkflowBStart"] == 1000
+    assert "workflow_b.pending_escalation.finalize" in {
         step["name"] for step in timing["workflow"]["steps"]
     }
     assert written_logs[0].metadata["target"] == "human_review"
+    assert written_logs[0].metadata["pendingEscalation"] == {
+        "startedAt": "2026-03-30T10:00:00+00:00",
+        "expiresAt": "2026-03-30T10:00:05+00:00",
+    }
     assert isinstance(written_logs[0].metadata["latencyMs"], int)
 
     session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
     assert session is not None
     assert session.escalate is True
+    assert session.pending_escalation is False
 
 
 @pytest.mark.asyncio
@@ -385,6 +434,206 @@ async def test_workflow_b_skips_sessions_that_have_already_been_escalated() -> N
     assert result.processed is False
     assert result.decision is None
     assert database.governance_logs.logs == []
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_restarts_debounce_if_new_message_arrives_during_pending_escalation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new inbound during the grace window should clear the pending escalation and allow a fresh answer pass."""
+
+    responses = iter(
+        [
+            '{"bestIndex": 0, "similarityScore": 0.21, "reason": "candidate is weakly related"}',
+            '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}',
+        ]
+    )
+
+    async def fake_generate_completion(**kwargs) -> str:
+        return next(responses)
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+
+    database = ProcessingDatabase(
+        sessions=[_ready_session(text="What are your opening hours?")],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="What are your opening hours and address?",
+                answer="We are open 10 AM to 8 PM and are located in Koramangala.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    first_result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert first_result.decision is None
+
+    seeded = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert seeded is not None
+    assert seeded.id is not None
+    updated = await database.session_state.update_by_id(
+        seeded.id,
+        {
+            "messages": [
+                *seeded.messages,
+                MessageItem(text="and where are you located?", at=datetime(2026, 3, 30, 10, 0, 2, tzinfo=timezone.utc)),
+            ],
+            "updated_at": datetime(2026, 3, 30, 10, 0, 2, tzinfo=timezone.utc),
+            "debounce_expires_at": datetime(2026, 3, 30, 10, 0, 4, tzinfo=timezone.utc),
+            "processing": False,
+            "pending_escalation": False,
+            "pending_escalation_expires_at": None,
+            "pending_escalation_metadata": {},
+        },
+    )
+    assert updated is not None
+
+    second_result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
+        now=datetime(2026, 3, 30, 10, 0, 4, tzinfo=timezone.utc),
+    )
+
+    assert second_result.decision == GovernanceDecision.ANSWERED
+    assert second_result.answer_supplied == "We are open 10 AM to 8 PM and are located in Koramangala."
+    assert len(database.governance_logs.logs) == 1
+    assert database.governance_logs.logs[0].decision == GovernanceDecision.ANSWERED
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_does_not_start_pending_escalation_if_new_message_arrives_mid_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If a newer inbound arrives while Workflow B is still matching, the old run should not arm escalation."""
+
+    database = ProcessingDatabase(
+        sessions=[_ready_session(text="What are your opening hours?")],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="faq-1",
+                tenantId="Niyomilan",
+                domainId="general",
+                question="What are your opening hours and address?",
+                answer="We are open 10 AM to 8 PM and are located in Koramangala.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    responses = iter(
+        [
+            '{"bestIndex": 0, "similarityScore": 0.21, "reason": "candidate is weakly related"}',
+            '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}',
+        ]
+    )
+
+    async def fake_generate_completion(**kwargs) -> str:
+        current = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+        assert current is not None
+        assert current.id is not None
+
+        if len(current.messages) == 1:
+            updated = await database.session_state.update_by_id(
+                current.id,
+                {
+                    "messages": [
+                        *current.messages,
+                        MessageItem(text="and where are you located?", at=datetime(2026, 3, 30, 10, 0, 2, tzinfo=timezone.utc)),
+                    ],
+                    "updated_at": datetime(2026, 3, 30, 10, 0, 2, tzinfo=timezone.utc),
+                    "debounce_expires_at": datetime(2026, 3, 30, 10, 0, 4, tzinfo=timezone.utc),
+                    "processing": False,
+                    "pending_escalation": False,
+                    "pending_escalation_expires_at": None,
+                    "pending_escalation_metadata": {},
+                },
+            )
+            assert updated is not None
+
+        return next(responses)
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+
+    first_result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert first_result.processed is False
+    assert first_result.decision is None
+    assert database.governance_logs.logs == []
+
+    session_after_first_run = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert session_after_first_run is not None
+    assert session_after_first_run.pending_escalation is False
+    assert [message.text for message in session_after_first_run.messages] == [
+        "What are your opening hours?",
+        "and where are you located?",
+    ]
+
+    second_result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
+        now=datetime(2026, 3, 30, 10, 0, 4, tzinfo=timezone.utc),
+    )
+
+    assert second_result.decision == GovernanceDecision.ANSWERED
+    assert second_result.answer_supplied == "We are open 10 AM to 8 PM and are located in Koramangala."
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_cancels_stale_pending_escalation_before_finalization() -> None:
+    """Pending escalation should be canceled if a newer message arrived after the grace started."""
+
+    stale_session = _ready_session(
+        texts=["What are your opening hours?", "and where are you located?"],
+    ).model_copy(
+        update={
+            "pending_escalation": True,
+            "pending_escalation_expires_at": datetime(2026, 3, 30, 10, 0, 5, tzinfo=timezone.utc),
+            "pending_escalation_metadata": {
+                "reason": "score below threshold",
+                "target": "human_review",
+                "startedAt": "2026-03-30T10:00:00+00:00",
+                "expiresAt": "2026-03-30T10:00:05+00:00",
+            },
+            "debounce_expires_at": datetime(2026, 3, 30, 10, 0, 3, tzinfo=timezone.utc),
+            "updated_at": datetime(2026, 3, 30, 10, 0, 2, tzinfo=timezone.utc),
+        },
+        deep=True,
+    )
+    stale_session.messages[0].at = datetime(2026, 3, 30, 9, 55, tzinfo=timezone.utc)
+    stale_session.messages[1].at = datetime(2026, 3, 30, 10, 0, 2, tzinfo=timezone.utc)
+
+    database = ProcessingDatabase(
+        sessions=[stale_session],
+        knowledge_entries=[],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    result = await run_workflow_b(
+        database,
+        settings=Settings(_env_file=None, SIMILARITY_THRESHOLD=0.75, WHATSAPP_PROVIDER="normalized", OPENAI_MATCHER_CANDIDATE_LIMIT=8, ESCALATION_GRACE_SECONDS=5),
+        now=datetime(2026, 3, 30, 10, 0, 6, tzinfo=timezone.utc),
+    )
+
+    assert result.processed is False
+    assert result.decision is None
+    assert database.governance_logs.logs == []
+
+    session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert session is not None
+    assert session.pending_escalation is False
+    assert session.escalate is False
 
 
 @pytest.mark.asyncio
@@ -656,7 +905,7 @@ async def test_workflow_b_sends_explicit_active_question_and_background_context(
 async def test_workflow_b_wraps_internal_failures_and_keeps_session_latched(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Internal failures should be wrapped without clearing the processing latch."""
+    """Internal failures should be wrapped and release the processing latch for retry."""
 
     async def fake_generate_completion(**kwargs) -> str:
         return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
@@ -688,7 +937,7 @@ async def test_workflow_b_wraps_internal_failures_and_keeps_session_latched(
     session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
     assert session is not None
     assert session.status == "open"
-    assert session.processing is True
+    assert session.processing is False
 
 
 @pytest.mark.asyncio

@@ -102,6 +102,9 @@ async def run_workflow_a(
                     "updated_at": current_time,
                     "debounce_expires_at": debounce_expires_at,
                     "processing": False,
+                    "pending_escalation": False,
+                    "pending_escalation_expires_at": None,
+                    "pending_escalation_metadata": {},
                 },
             )
 

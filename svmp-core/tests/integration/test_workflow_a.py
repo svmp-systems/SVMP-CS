@@ -214,6 +214,9 @@ async def test_workflow_a_appends_follow_up_message_and_resets_debounce() -> Non
     assert updated.status == "open"
     assert updated.processing is False
     assert updated.escalate is False
+    assert updated.pending_escalation is False
+    assert updated.pending_escalation_expires_at is None
+    assert updated.pending_escalation_metadata == {}
     assert updated.context == []
 
 
@@ -433,3 +436,55 @@ async def test_workflow_a_preserves_existing_escalate_flag() -> None:
     assert updated.escalate is True
     assert updated.processing is False
     assert [message.text for message in updated.messages] == ["hi", "still there?"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_a_clears_pending_escalation_when_new_message_arrives() -> None:
+    """New inbound should cancel a pending escalation grace window and restart debounce."""
+
+    database = InMemoryDatabase()
+    first_now = datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc)
+    second_now = first_now + timedelta(seconds=3)
+
+    created = await run_workflow_a(
+        database,
+        WebhookPayload(
+            tenantId="Niyomilan",
+            clientId="whatsapp",
+            userId="9845891194",
+            text="hi",
+        ),
+        settings=_settings(),
+        now=first_now,
+    )
+
+    seeded = await database.session_state.update_by_id(
+        created.id,
+        {
+            "pending_escalation": True,
+            "pending_escalation_expires_at": first_now + timedelta(seconds=5),
+            "pending_escalation_metadata": {"reason": "score below threshold"},
+            "processing": True,
+        },
+    )
+    assert seeded is not None
+    assert seeded.pending_escalation is True
+
+    updated = await run_workflow_a(
+        database,
+        WebhookPayload(
+            tenantId="Niyomilan",
+            clientId="whatsapp",
+            userId="9845891194",
+            text="one more detail",
+        ),
+        settings=_settings(),
+        now=second_now,
+    )
+
+    assert updated.pending_escalation is False
+    assert updated.pending_escalation_expires_at is None
+    assert updated.pending_escalation_metadata == {}
+    assert updated.processing is False
+    assert updated.debounce_expires_at == second_now + timedelta(milliseconds=2500)
+    assert [message.text for message in updated.messages] == ["hi", "one more detail"]

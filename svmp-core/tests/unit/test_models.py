@@ -19,6 +19,9 @@ def test_session_state_accepts_internal_field_names() -> None:
     assert session.status == "open"
     assert session.processing is False
     assert session.escalate is False
+    assert session.pending_escalation is False
+    assert session.pending_escalation_expires_at is None
+    assert session.pending_escalation_metadata == {}
     assert session.messages == []
 
 
@@ -36,6 +39,7 @@ def test_session_state_accepts_mongo_aliases() -> None:
     assert session.client_id == "whatsapp"
     assert session.user_id == "9845891194"
     assert session.escalate is False
+    assert session.pending_escalation is False
     assert session.messages[0].text == "hi"
 
 
@@ -50,12 +54,15 @@ def test_session_state_normalizes_naive_datetimes_to_utc() -> None:
         createdAt=datetime(2026, 4, 4, 16, 11, 17),
         updatedAt=datetime(2026, 4, 4, 16, 11, 18),
         debounceExpiresAt=datetime(2026, 4, 4, 16, 11, 19),
+        pendingEscalation=True,
+        pendingEscalationExpiresAt=datetime(2026, 4, 4, 16, 11, 24),
     )
 
     assert session.messages[0].at == datetime(2026, 4, 4, 16, 11, 17, tzinfo=timezone.utc)
     assert session.created_at == datetime(2026, 4, 4, 16, 11, 17, tzinfo=timezone.utc)
     assert session.updated_at == datetime(2026, 4, 4, 16, 11, 18, tzinfo=timezone.utc)
     assert session.debounce_expires_at == datetime(2026, 4, 4, 16, 11, 19, tzinfo=timezone.utc)
+    assert session.pending_escalation_expires_at == datetime(2026, 4, 4, 16, 11, 24, tzinfo=timezone.utc)
 
 
 def test_knowledge_entry_defaults_and_alias_dump() -> None:

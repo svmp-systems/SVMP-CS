@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from typing import Any
 
@@ -131,6 +131,16 @@ def _parse_trace_timestamp(value: str | None) -> datetime | None:
     return datetime.fromisoformat(normalized)
 
 
+def _parse_optional_datetime(value: Any) -> datetime | None:
+    """Parse either datetime or ISO-string values into UTC-aware datetimes."""
+
+    if isinstance(value, datetime):
+        return _normalize_utc_datetime(value)
+    if isinstance(value, str) and value.strip():
+        return _parse_trace_timestamp(value)
+    return None
+
+
 def _message_window_timing(
     session: SessionState,
     *,
@@ -143,16 +153,28 @@ def _message_window_timing(
     first_message_at = message_times[0] if message_times else None
     last_message_at = message_times[-1] if message_times else None
     debounce_expires_at = session.debounce_expires_at
+    pending_started_at = _parse_optional_datetime(session.pending_escalation_metadata.get("startedAt"))
+    pending_expires_at = session.pending_escalation_expires_at
 
     return {
         "firstMessageAt": _normalize_utc_datetime(first_message_at).isoformat() if first_message_at is not None else None,
         "lastMessageAt": _normalize_utc_datetime(last_message_at).isoformat() if last_message_at is not None else None,
         "debounceExpiresAt": _normalize_utc_datetime(debounce_expires_at).isoformat(),
+        "pendingEscalationStartedAt": _normalize_utc_datetime(pending_started_at).isoformat()
+        if pending_started_at is not None
+        else None,
+        "pendingEscalationExpiresAt": _normalize_utc_datetime(pending_expires_at).isoformat()
+        if pending_expires_at is not None
+        else None,
         "workflowBStartedAt": _normalize_utc_datetime(workflow_started_at).isoformat(),
         "sessionAcquiredAt": _normalize_utc_datetime(acquired_at).isoformat() if acquired_at is not None else None,
         "durationsMs": {
             "messageWindowSpan": _duration_ms_between(first_message_at, last_message_at),
             "lastMessageToDebounceExpiry": _duration_ms_between(last_message_at, debounce_expires_at),
+            "lastMessageToPendingEscalationStart": _duration_ms_between(last_message_at, pending_started_at),
+            "lastMessageToPendingEscalationExpiry": _duration_ms_between(last_message_at, pending_expires_at),
+            "pendingEscalationStartToExpiry": _duration_ms_between(pending_started_at, pending_expires_at),
+            "pendingEscalationExpiryToWorkflowBStart": _duration_ms_between(pending_expires_at, workflow_started_at),
             "lastMessageToWorkflowBStart": _duration_ms_between(last_message_at, workflow_started_at),
             "debounceExpiryToWorkflowBStart": _duration_ms_between(debounce_expires_at, workflow_started_at),
             "lastMessageToSessionAcquire": _duration_ms_between(last_message_at, acquired_at),
@@ -284,6 +306,47 @@ def _matcher_metadata(result: MatcherResult) -> dict[str, Any]:
     }
 
 
+async def _load_latest_session(database: Database, session: SessionState) -> SessionState:
+    """Reload the live session document for race-aware merge decisions."""
+
+    latest_session = await database.session_state.get_by_identity(
+        session.tenant_id,
+        session.client_id,
+        session.user_id,
+    )
+    if latest_session is None or latest_session.id != session.id:
+        raise DatabaseError("failed to load session for race-aware merge")
+    return latest_session
+
+
+def _messages_changed_since_acquire(session: SessionState, latest_session: SessionState) -> bool:
+    """Return whether a newer inbound mutated the session after Workflow B acquired it."""
+
+    if len(latest_session.messages) != len(session.messages):
+        return True
+
+    for current_message, latest_message in zip(session.messages, latest_session.messages, strict=False):
+        if current_message.text != latest_message.text or current_message.at != latest_message.at:
+            return True
+
+    return latest_session.updated_at > session.updated_at
+
+
+def _pending_escalation_is_stale(session: SessionState) -> bool:
+    """Return whether pending escalation started before the latest inbound message arrived."""
+
+    pending_started_at = _parse_optional_datetime(session.pending_escalation_metadata.get("startedAt"))
+    if pending_started_at is None:
+        return False
+
+    message_times = [message.at for message in session.messages]
+    if not message_times:
+        return False
+
+    last_message_at = max(message_times)
+    return _normalize_utc_datetime(last_message_at) > pending_started_at
+
+
 def _audit_metadata(
     *,
     identity: IdentityFrame,
@@ -370,6 +433,9 @@ async def _archive_processed_window(
         "updated_at": latest_session.updated_at if has_unprocessed_messages else now,
         "debounce_expires_at": latest_session.debounce_expires_at,
         "processing": False if has_unprocessed_messages else True,
+        "pending_escalation": False,
+        "pending_escalation_expires_at": None,
+        "pending_escalation_metadata": {},
     }
     if escalate is not None:
         update_payload["escalate"] = escalate
@@ -380,6 +446,70 @@ async def _archive_processed_window(
     )
     if updated_session is None:
         raise DatabaseError("failed to archive processed session window")
+    return updated_session
+
+
+async def _start_pending_escalation(
+    database: Database,
+    session: SessionState,
+    *,
+    now: datetime,
+    grace_seconds: int,
+    reason: str,
+    target: EscalationTarget,
+    timing_metadata: Mapping[str, Any],
+    conversation: ConversationView,
+    domain_id: str | None,
+    threshold: float | None,
+    similarity_score: float | None,
+    similarity_outcome: str,
+    candidate_found: bool,
+    matcher_metadata: Mapping[str, Any] | None = None,
+    matched_question: str | None = None,
+) -> SessionState:
+    """Mark the session as pending escalation so new inbound can still reopen it."""
+
+    if session.id is None:
+        raise DatabaseError("ready session missing id")
+
+    latest_session = await _load_latest_session(database, session)
+    if _messages_changed_since_acquire(session, latest_session):
+        updated_session = await database.session_state.update_by_id(
+            session.id,
+            {"processing": False},
+        )
+        if updated_session is None:
+            raise DatabaseError("failed to release superseded session")
+        return updated_session
+
+    pending_expires_at = now + timedelta(seconds=grace_seconds)
+    updated_session = await database.session_state.update_by_id(
+        session.id,
+        {
+            "processing": False,
+            "pending_escalation": True,
+            "pending_escalation_expires_at": pending_expires_at,
+            "pending_escalation_metadata": {
+                "reason": reason,
+                "target": target.value,
+                "domainId": domain_id,
+                "threshold": threshold,
+                "similarityScore": similarity_score,
+                "similarityOutcome": similarity_outcome,
+                "candidateFound": candidate_found,
+                "matcherMetadata": dict(matcher_metadata or {}),
+                "activeQuestion": conversation.active_question,
+                "activeMessages": list(conversation.active_messages),
+                "context": conversation.context,
+                "matchedQuestion": matched_question,
+                "startedAt": _normalize_utc_datetime(now).isoformat(),
+                "expiresAt": _normalize_utc_datetime(pending_expires_at).isoformat(),
+                "timing": dict(timing_metadata),
+            },
+        },
+    )
+    if updated_session is None:
+        raise DatabaseError("failed to mark pending escalation")
     return updated_session
 
 
@@ -505,6 +635,148 @@ async def run_workflow_b(
             ),
         }
 
+        if acquired_session.pending_escalation and (
+            acquired_session.pending_escalation_expires_at is not None
+            and acquired_session.pending_escalation_expires_at <= current_time
+        ):
+            if _pending_escalation_is_stale(acquired_session):
+                with trace.step("workflow_b.session_state.cancel_stale_pending_escalation"):
+                    refreshed_session = await database.session_state.update_by_id(
+                        acquired_session.id,
+                        {
+                            "processing": False,
+                            "pending_escalation": False,
+                            "pending_escalation_expires_at": None,
+                            "pending_escalation_metadata": {},
+                        },
+                    )
+                if refreshed_session is None:
+                    raise DatabaseError("failed to cancel stale pending escalation")
+                logger.info(
+                    "workflow_b_pending_escalation_canceled",
+                    sessionId=acquired_session.id,
+                    tenantId=identity.tenant_id,
+                    clientId=identity.client_id,
+                    userId=identity.user_id,
+                    trace=trace.snapshot(
+                        outcome="pending_escalation_canceled",
+                        messageWindow=timing_metadata["messageWindow"],
+                    ),
+                )
+                return WorkflowBResult(
+                    processed=False,
+                    session_id=acquired_session.id,
+                    decision=None,
+                    combined_text=combined_text,
+                    domain_id=None,
+                    similarity_score=None,
+                    answer_supplied=None,
+                    outbound_send_result=None,
+                    escalation_target=None,
+                    reason="newer_messages_arrived",
+                    matcher_used="pending_escalation",
+                )
+
+            with trace.step("workflow_b.pending_escalation.finalize"):
+                pending_metadata = dict(acquired_session.pending_escalation_metadata)
+                pending_reason = str(pending_metadata.get("reason", "pending_escalation_expired")).strip() or "pending_escalation_expired"
+                pending_domain_id = pending_metadata.get("domainId")
+                if not isinstance(pending_domain_id, str) or not pending_domain_id.strip():
+                    pending_domain_id = None
+                pending_similarity_score = pending_metadata.get("similarityScore")
+                if not isinstance(pending_similarity_score, (int, float)):
+                    pending_similarity_score = None
+                pending_threshold = pending_metadata.get("threshold")
+                if not isinstance(pending_threshold, (int, float)):
+                    pending_threshold = None
+                pending_similarity_outcome = str(pending_metadata.get("similarityOutcome", "not_evaluated"))
+                pending_candidate_found = bool(pending_metadata.get("candidateFound", False))
+                pending_matcher_metadata = pending_metadata.get("matcherMetadata")
+                if not isinstance(pending_matcher_metadata, Mapping):
+                    pending_matcher_metadata = {}
+                pending_target = pending_metadata.get("target")
+                if not isinstance(pending_target, str) or not pending_target.strip():
+                    pending_target = EscalationTarget.HUMAN_REVIEW.value
+
+                escalation = request_escalation(
+                    identity,
+                    combined_text,
+                    reason=pending_reason,
+                    metadata={"domainId": pending_domain_id} if pending_domain_id is not None else None,
+                )
+            log = build_escalated_log(
+                identity,
+                combined_text,
+                similarity_score=float(pending_similarity_score) if pending_similarity_score is not None else None,
+                metadata=_audit_metadata(
+                    identity=identity,
+                    session=acquired_session,
+                    decision=GovernanceDecision.ESCALATED.value,
+                    latency_ms=int((perf_counter() - started_at) * 1000),
+                    reason=escalation.reason,
+                    provider_name=acquired_session.provider,
+                    threshold=float(pending_threshold) if pending_threshold is not None else None,
+                    similarity_score=float(pending_similarity_score) if pending_similarity_score is not None else None,
+                    similarity_outcome=pending_similarity_outcome,
+                    candidate_found=pending_candidate_found,
+                    domain_id=pending_domain_id,
+                    matcher_metadata=pending_matcher_metadata,
+                    extra={
+                        "timing": {
+                            **timing_metadata,
+                            "workflow": trace.snapshot(),
+                        },
+                        "target": pending_target,
+                        "activeQuestion": pending_metadata.get("activeQuestion", conversation.active_question),
+                        "activeMessages": pending_metadata.get("activeMessages", conversation.active_messages),
+                        "context": pending_metadata.get("context", conversation.context),
+                        "matchedQuestion": pending_metadata.get("matchedQuestion"),
+                        "pendingEscalation": {
+                            "startedAt": pending_metadata.get("startedAt"),
+                            "expiresAt": pending_metadata.get("expiresAt"),
+                        },
+                    },
+                ),
+                timestamp=current_time,
+            )
+            with trace.step("workflow_b.governance_logs.create"):
+                await database.governance_logs.create(log)
+            with trace.step("workflow_b.session_state.archive_processed_window"):
+                await _archive_processed_window(
+                    database,
+                    acquired_session,
+                    active_question=conversation.active_question,
+                    now=current_time,
+                    escalate=True,
+                )
+            logger.info(
+                "workflow_b_completed",
+                decision=GovernanceDecision.ESCALATED.value,
+                sessionId=acquired_session.id,
+                tenantId=identity.tenant_id,
+                clientId=identity.client_id,
+                userId=identity.user_id,
+                domainId=pending_domain_id,
+                similarityScore=pending_similarity_score,
+                trace=trace.snapshot(
+                    outcome=GovernanceDecision.ESCALATED.value,
+                    messageWindow=timing_metadata["messageWindow"],
+                ),
+            )
+            return WorkflowBResult(
+                processed=True,
+                session_id=acquired_session.id,
+                decision=GovernanceDecision.ESCALATED,
+                combined_text=combined_text,
+                domain_id=pending_domain_id,
+                similarity_score=float(pending_similarity_score) if pending_similarity_score is not None else None,
+                answer_supplied=None,
+                outbound_send_result=None,
+                escalation_target=escalation.target,
+                reason=escalation.reason,
+                matcher_used="pending_escalation",
+            )
+
         with trace.step("workflow_b.tenants.get_by_tenant_id"):
             tenant_document = await database.tenants.get_by_tenant_id(acquired_session.tenant_id)
         raw_domains = tenant_document.get("domains", []) if isinstance(tenant_document, Mapping) else []
@@ -532,60 +804,66 @@ async def run_workflow_b(
                 combined_text,
                 reason="domain_unresolved",
             )
-            log = build_escalated_log(
-                identity,
-                combined_text,
-                metadata=_audit_metadata(
-                    identity=identity,
-                    session=acquired_session,
-                    decision=GovernanceDecision.ESCALATED.value,
-                    latency_ms=int((perf_counter() - started_at) * 1000),
+            with trace.step("workflow_b.session_state.mark_pending_escalation"):
+                updated_session = await _start_pending_escalation(
+                    database,
+                    acquired_session,
+                    now=current_time,
+                    grace_seconds=runtime_settings.ESCALATION_GRACE_SECONDS,
                     reason=escalation.reason,
-                    provider_name=acquired_session.provider,
+                    target=escalation.target,
+                    timing_metadata=timing_metadata,
+                    conversation=conversation,
+                    domain_id=None,
                     threshold=threshold,
                     similarity_score=None,
                     similarity_outcome="not_evaluated",
                     candidate_found=False,
-                    extra={
-                        "timing": {
-                            **timing_metadata,
-                            "workflow": trace.snapshot(),
-                        },
-                        "target": escalation.target.value,
-                        "activeQuestion": conversation.active_question,
-                        "activeMessages": conversation.active_messages,
-                        "context": conversation.context,
-                    },
-                ),
-                timestamp=current_time,
-            )
-            with trace.step("workflow_b.governance_logs.create"):
-                await database.governance_logs.create(log)
-            with trace.step("workflow_b.session_state.archive_processed_window"):
-                await _archive_processed_window(
-                    database,
-                    acquired_session,
-                    active_question=conversation.active_question,
-                    now=current_time,
-                    escalate=True,
+                )
+            if not updated_session.pending_escalation:
+                logger.info(
+                    "workflow_b_requeued_due_to_newer_messages",
+                    sessionId=acquired_session.id,
+                    tenantId=identity.tenant_id,
+                    clientId=identity.client_id,
+                    userId=identity.user_id,
+                    trace=trace.snapshot(
+                        outcome="superseded_by_newer_messages",
+                        messageWindow=timing_metadata["messageWindow"],
+                    ),
+                )
+                return WorkflowBResult(
+                    processed=False,
+                    session_id=acquired_session.id,
+                    decision=None,
+                    combined_text=combined_text,
+                    domain_id=None,
+                    similarity_score=None,
+                    answer_supplied=None,
+                    outbound_send_result=None,
+                    escalation_target=None,
+                    reason="newer_messages_arrived",
+                    matcher_used="domain_gate",
                 )
             logger.info(
-                "workflow_b_completed",
-                decision=GovernanceDecision.ESCALATED.value,
+                "workflow_b_pending_escalation_started",
                 sessionId=acquired_session.id,
                 tenantId=identity.tenant_id,
                 clientId=identity.client_id,
                 userId=identity.user_id,
                 domainId=None,
+                pendingEscalationExpiresAt=updated_session.pending_escalation_expires_at.isoformat()
+                if updated_session.pending_escalation_expires_at is not None
+                else None,
                 trace=trace.snapshot(
-                    outcome=GovernanceDecision.ESCALATED.value,
+                    outcome="pending_escalation",
                     messageWindow=timing_metadata["messageWindow"],
                 ),
             )
             return WorkflowBResult(
                 processed=True,
                 session_id=acquired_session.id,
-                decision=GovernanceDecision.ESCALATED,
+                decision=None,
                 combined_text=combined_text,
                 domain_id=None,
                 similarity_score=None,
@@ -707,65 +985,70 @@ async def run_workflow_b(
             reason=similarity_decision.reason,
             metadata={"domainId": domain_id},
         )
-        log = build_escalated_log(
-            identity,
-            combined_text,
-            similarity_score=similarity_decision.score,
-            metadata=_audit_metadata(
-                identity=identity,
-                session=acquired_session,
-                decision=GovernanceDecision.ESCALATED.value,
-                latency_ms=int((perf_counter() - started_at) * 1000),
+        with trace.step("workflow_b.session_state.mark_pending_escalation"):
+            updated_session = await _start_pending_escalation(
+                database,
+                acquired_session,
+                now=current_time,
+                grace_seconds=runtime_settings.ESCALATION_GRACE_SECONDS,
                 reason=similarity_decision.reason,
-                provider_name=acquired_session.provider,
+                target=escalation.target,
+                timing_metadata=timing_metadata,
+                conversation=conversation,
+                domain_id=domain_id,
                 threshold=threshold,
                 similarity_score=similarity_decision.score,
                 similarity_outcome=similarity_decision.outcome.value,
                 candidate_found=openai_match.entry is not None,
-                domain_id=domain_id,
                 matcher_metadata=matcher_metadata,
-                extra={
-                    "timing": {
-                        **timing_metadata,
-                        "workflow": trace.snapshot(),
-                    },
-                    "target": escalation.target.value,
-                    "activeQuestion": conversation.active_question,
-                    "activeMessages": conversation.active_messages,
-                    "context": conversation.context,
-                    "matchedQuestion": openai_match.entry.question if openai_match.entry is not None else None,
-                },
-            ),
-            timestamp=current_time,
-        )
-        with trace.step("workflow_b.governance_logs.create"):
-            await database.governance_logs.create(log)
-        with trace.step("workflow_b.session_state.archive_processed_window"):
-            await _archive_processed_window(
-                database,
-                acquired_session,
-                active_question=conversation.active_question,
-                now=current_time,
-                escalate=True,
+                matched_question=openai_match.entry.question if openai_match.entry is not None else None,
+            )
+        if not updated_session.pending_escalation:
+            logger.info(
+                "workflow_b_requeued_due_to_newer_messages",
+                sessionId=acquired_session.id,
+                tenantId=identity.tenant_id,
+                clientId=identity.client_id,
+                userId=identity.user_id,
+                domainId=domain_id,
+                trace=trace.snapshot(
+                    outcome="superseded_by_newer_messages",
+                    messageWindow=timing_metadata["messageWindow"],
+                ),
+            )
+            return WorkflowBResult(
+                processed=False,
+                session_id=acquired_session.id,
+                decision=None,
+                combined_text=combined_text,
+                domain_id=domain_id,
+                similarity_score=similarity_decision.score,
+                answer_supplied=None,
+                outbound_send_result=None,
+                escalation_target=None,
+                reason="newer_messages_arrived",
+                matcher_used="openai",
             )
         logger.info(
-            "workflow_b_completed",
-            decision=GovernanceDecision.ESCALATED.value,
+            "workflow_b_pending_escalation_started",
             sessionId=acquired_session.id,
             tenantId=identity.tenant_id,
             clientId=identity.client_id,
             userId=identity.user_id,
             domainId=domain_id,
             similarityScore=similarity_decision.score,
+            pendingEscalationExpiresAt=updated_session.pending_escalation_expires_at.isoformat()
+            if updated_session.pending_escalation_expires_at is not None
+            else None,
             trace=trace.snapshot(
-                outcome=GovernanceDecision.ESCALATED.value,
+                outcome="pending_escalation",
                 messageWindow=timing_metadata["messageWindow"],
             ),
         )
         return WorkflowBResult(
             processed=True,
             session_id=acquired_session.id,
-            decision=GovernanceDecision.ESCALATED,
+            decision=None,
             combined_text=combined_text,
             domain_id=domain_id,
             similarity_score=similarity_decision.score,

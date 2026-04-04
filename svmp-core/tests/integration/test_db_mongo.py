@@ -212,6 +212,8 @@ async def test_connect_initializes_repositories_and_indexes(monkeypatch: pytest.
     assert fake_db["session_state"].indexes[1]["keys"] == [
         ("processing", 1),
         ("escalate", 1),
+        ("pendingEscalation", 1),
+        ("pendingEscalationExpiresAt", 1),
         ("debounceExpiresAt", 1),
     ]
     assert len(fake_db["knowledge_base"].indexes) == 1
@@ -266,6 +268,8 @@ async def test_connect_replaces_stale_ready_session_index(monkeypatch: pytest.Mo
     assert ready_index["keys"] == [
         ("processing", 1),
         ("escalate", 1),
+        ("pendingEscalation", 1),
+        ("pendingEscalationExpiresAt", 1),
         ("debounceExpiresAt", 1),
     ]
 
@@ -381,6 +385,73 @@ async def test_session_repository_acquires_legacy_session_without_escalate_field
     assert acquired.id == "legacy-session"
     assert acquired.processing is True
     assert acquired.escalate is False
+
+
+@pytest.mark.asyncio
+async def test_session_repository_acquires_due_pending_escalation_before_normal_ready_session() -> None:
+    """Pending escalations whose grace has expired should be picked up for finalization."""
+
+    fake_client = FakeMotorClient()
+    database = MongoDatabase(settings=_build_settings(), client=fake_client)
+    await database.connect()
+
+    now = datetime.now(timezone.utc)
+    first = await database.session_state.create(
+        SessionState(
+            tenant_id="Niyomilan",
+            client_id="whatsapp",
+            user_id="9845891194",
+            debounce_expires_at=now - timedelta(seconds=10),
+        )
+    )
+    second = await database.session_state.create(
+        SessionState(
+            tenant_id="Niyomilan",
+            client_id="whatsapp",
+            user_id="9999999999",
+            pending_escalation=True,
+            pending_escalation_expires_at=now - timedelta(seconds=1),
+            debounce_expires_at=now - timedelta(seconds=10),
+        )
+    )
+
+    acquired = await database.session_state.acquire_ready_session(now)
+
+    assert acquired is not None
+    assert acquired.id == second.id
+    assert acquired.pending_escalation is True
+    assert acquired.processing is True
+    assert first.id != second.id
+
+
+@pytest.mark.asyncio
+async def test_session_repository_does_not_acquire_pending_escalation_before_grace_expires() -> None:
+    """Pending escalations should stay dormant until their grace deadline is reached."""
+
+    fake_client = FakeMotorClient()
+    database = MongoDatabase(settings=_build_settings(), client=fake_client)
+    await database.connect()
+
+    now = datetime.now(timezone.utc)
+    created = await database.session_state.create(
+        SessionState(
+            tenant_id="Niyomilan",
+            client_id="whatsapp",
+            user_id="9845891194",
+            pending_escalation=True,
+            pending_escalation_expires_at=now + timedelta(seconds=3),
+            debounce_expires_at=now - timedelta(seconds=10),
+        )
+    )
+
+    acquired = await database.session_state.acquire_ready_session(now)
+
+    assert acquired is None
+
+    stored = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
+    assert stored is not None
+    assert stored.id == created.id
+    assert stored.pending_escalation is True
 
 
 @pytest.mark.asyncio

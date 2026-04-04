@@ -65,12 +65,29 @@ class DemoSessionStateRepository(SessionStateRepository):
         return updated.model_copy(deep=True)
 
     async def acquire_ready_session(self, now: datetime) -> SessionState | None:
+        pending_sessions = [
+            session
+            for session in self._sessions.values()
+            if session.status == "open"
+            and session.processing is False
+            and session.escalate is False
+            and session.pending_escalation is True
+            and session.pending_escalation_expires_at is not None
+            and session.pending_escalation_expires_at <= now
+        ]
+        if pending_sessions:
+            selected = sorted(pending_sessions, key=lambda session: session.pending_escalation_expires_at)[0]
+            selected.processing = True
+            selected.updated_at = now
+            return selected.model_copy(deep=True)
+
         ready_sessions = [
             session
             for session in self._sessions.values()
             if session.status == "open"
             and session.processing is False
             and session.escalate is False
+            and session.pending_escalation is False
             and session.debounce_expires_at <= now
         ]
         if not ready_sessions:

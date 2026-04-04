@@ -21,6 +21,7 @@ def test_settings_defaults_load() -> None:
     assert loaded.MONGODB_GOVERNANCE_COLLECTION == "governance_logs"
     assert loaded.MONGODB_TENANTS_COLLECTION == "tenants"
     assert loaded.DEBOUNCE_MS == 2500
+    assert loaded.ESCALATION_GRACE_SECONDS == 5
     assert loaded.SIMILARITY_THRESHOLD == pytest.approx(0.75)
     assert loaded.WORKFLOW_B_INTERVAL_SECONDS == 1
     assert loaded.WORKFLOW_C_INTERVAL_HOURS == 24
@@ -38,6 +39,7 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_NAME", "SVMP-Test")
     monkeypatch.setenv("MONGODB_DB_NAME", "svmp_test")
     monkeypatch.setenv("DEBOUNCE_MS", "3000")
+    monkeypatch.setenv("ESCALATION_GRACE_SECONDS", "7")
     monkeypatch.setenv("USE_OPENAI_MATCHER", "true")
     monkeypatch.setenv("OPENAI_SHADOW_MODE", "true")
     monkeypatch.setenv("OPENAI_MATCHER_CANDIDATE_LIMIT", "5")
@@ -51,6 +53,7 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     assert loaded.APP_NAME == "SVMP-Test"
     assert loaded.MONGODB_DB_NAME == "svmp_test"
     assert loaded.DEBOUNCE_MS == 3000
+    assert loaded.ESCALATION_GRACE_SECONDS == 7
     assert loaded.USE_OPENAI_MATCHER is True
     assert loaded.OPENAI_SHADOW_MODE is True
     assert loaded.OPENAI_MATCHER_CANDIDATE_LIMIT == 5

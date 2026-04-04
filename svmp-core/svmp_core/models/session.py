@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -51,15 +51,20 @@ class SessionState(BaseModel):
     status: Literal["open", "closed"] = "open"
     processing: bool = False
     escalate: bool = False
+    pending_escalation: bool = Field(default=False, alias="pendingEscalation")
+    pending_escalation_expires_at: datetime | None = Field(default=None, alias="pendingEscalationExpiresAt")
+    pending_escalation_metadata: dict[str, Any] = Field(default_factory=dict, alias="pendingEscalationMetadata")
     context: list[str] = Field(default_factory=list)
     messages: list[MessageItem] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utcnow, alias="createdAt")
     updated_at: datetime = Field(default_factory=_utcnow, alias="updatedAt")
     debounce_expires_at: datetime = Field(default_factory=_utcnow, alias="debounceExpiresAt")
 
-    @field_validator("created_at", "updated_at", "debounce_expires_at")
+    @field_validator("created_at", "updated_at", "debounce_expires_at", "pending_escalation_expires_at")
     @classmethod
-    def _normalize_session_times(cls, value: datetime) -> datetime:
+    def _normalize_session_times(cls, value: datetime | None) -> datetime | None:
         """Treat naive datetimes from Mongo as UTC."""
 
+        if value is None:
+            return None
         return _ensure_utc(value)

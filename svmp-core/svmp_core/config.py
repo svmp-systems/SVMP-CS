@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     TWILIO_WHATSAPP_NUMBER: str | None = None
 
     DEBOUNCE_MS: int = 2500
+    ESCALATION_GRACE_SECONDS: int = 5
     SIMILARITY_THRESHOLD: float = 0.75
     WORKFLOW_B_INTERVAL_SECONDS: int = 1
     WORKFLOW_C_INTERVAL_HOURS: int = 24
