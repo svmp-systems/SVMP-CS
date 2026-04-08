@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     MONGODB_KB_COLLECTION: str = "knowledge_base"
     MONGODB_GOVERNANCE_COLLECTION: str = "governance_logs"
     MONGODB_TENANTS_COLLECTION: str = "tenants"
+    SHARED_KB_TENANT_ID: str = "__shared__"
 
     OPENAI_API_KEY: SecretStr | None = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
@@ -67,6 +68,11 @@ class Settings(BaseSettings):
     SIMILARITY_THRESHOLD: float = 0.75
     WORKFLOW_B_INTERVAL_SECONDS: int = 1
     WORKFLOW_C_INTERVAL_HOURS: int = 24
+    ONBOARDING_FETCH_TIMEOUT_SECONDS: int = 10
+    ONBOARDING_MAX_SITE_PAGES: int = 8
+    ONBOARDING_MAX_PUBLIC_QA_URLS: int = 5
+    ONBOARDING_MAX_SOURCE_CHARS_PER_PAGE: int = 5000
+    ONBOARDING_FAQ_TARGET_COUNT: int = 30
 
     def validate_runtime(self) -> None:
         """Fail fast when the live runtime is missing required env values."""

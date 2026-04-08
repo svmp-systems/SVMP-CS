@@ -20,6 +20,7 @@ def test_settings_defaults_load() -> None:
     assert loaded.MONGODB_KB_COLLECTION == "knowledge_base"
     assert loaded.MONGODB_GOVERNANCE_COLLECTION == "governance_logs"
     assert loaded.MONGODB_TENANTS_COLLECTION == "tenants"
+    assert loaded.SHARED_KB_TENANT_ID == "__shared__"
     assert loaded.DEBOUNCE_MS == 2500
     assert loaded.SIMILARITY_THRESHOLD == pytest.approx(0.75)
     assert loaded.WORKFLOW_B_INTERVAL_SECONDS == 1

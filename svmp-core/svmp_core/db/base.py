@@ -56,6 +56,16 @@ class KnowledgeBaseRepository(ABC):
     ) -> list[KnowledgeEntry]:
         """List active FAQ entries for a tenant/domain pair."""
 
+    async def replace_entries_for_tenant_domain(
+        self,
+        tenant_id: str,
+        domain_id: str,
+        entries: Sequence[KnowledgeEntry],
+    ) -> int:
+        """Replace a tenant/domain slice with the provided entries when supported."""
+
+        raise NotImplementedError
+
 
 class GovernanceLogRepository(ABC):
     """Persistence contract for immutable governance logs."""
@@ -71,6 +81,11 @@ class TenantRepository(ABC):
     @abstractmethod
     async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
         """Return the tenant configuration document if it exists."""
+
+    async def upsert_tenant(self, tenant_document: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Create or replace a tenant configuration document when supported."""
+
+        raise NotImplementedError
 
     async def resolve_tenant_id_for_provider(
         self,

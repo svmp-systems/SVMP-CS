@@ -4,10 +4,12 @@
 
 SVMP is a Mongo-backed FastAPI service for tenant-scoped WhatsApp support automation. In the current branch, it:
 
+- accepts tenant onboarding submissions for website-driven KB generation
 - accepts inbound WhatsApp messages through a provider-aware webhook
 - buffers customer fragments into a mutable session document
 - processes ready sessions in Workflow B on a scheduler
 - resolves a tenant domain and loads tenant/domain FAQ entries from Mongo
+- automatically includes a shared/global FAQ layer for low-context filler prompts
 - asks OpenAI to choose the best FAQ match for the current active question
 - answers or escalates through a deterministic threshold gate
 - writes one governance log per decision
@@ -56,6 +58,10 @@ Reserved for future platform work. It is not the active runtime path.
 
 ```mermaid
 flowchart TD
+    OA["Tenant Onboarding Form"] --> OB["POST /tenants/onboarding"]
+    OB --> OC["Background Onboarding Pipeline"]
+    OC --> H["tenants"]
+    OC --> I["knowledge_base"]
     A["Inbound WhatsApp Message"] --> B["/webhook"]
     B --> C["Provider Resolution + Normalization"]
     C --> D["Workflow A"]
@@ -86,8 +92,64 @@ Startup behavior:
 HTTP endpoints:
 
 - `GET /health`
+- `POST /tenants/onboarding`
+- `GET /tenants/{tenantId}/onboarding-status`
 - `GET /webhook`
 - `POST /webhook`
+
+## Tenant Onboarding Pipeline
+
+The current branch now includes a tenant onboarding flow for bootstrapping a KB from a tenant website.
+
+High-level flow:
+
+1. A website form submits:
+   - `tenantId`
+   - `websiteUrl`
+   - `brandVoice`
+   - optional `publicQuestionUrls`
+2. `POST /tenants/onboarding` stores the tenant onboarding request in Mongo with status `queued`
+3. The app launches a background onboarding pipeline
+4. The pipeline:
+   - crawls same-origin website pages
+   - fetches any explicitly provided public-Q&A URLs
+   - asks OpenAI for a factual source brief
+   - asks OpenAI again for a large FAQ seed set
+   - merges in the shared filler FAQ seed set for greetings and low-context prompts
+   - replaces the tenant/domain FAQ slice in `knowledge_base`
+   - updates tenant onboarding status to `completed` or `failed`
+
+Current implementation notes:
+
+- generated FAQs are currently seeded into the `general` domain
+- onboarding stores `websiteUrl` and `brandVoice` directly on the tenant document
+- public-question enrichment currently supports explicit URLs provided by the caller
+- fully automatic external source discovery is not implemented yet
+
+## Shared KB Layer
+
+The runtime now supports a shared/global knowledge-base slice for all tenants.
+
+Behavior:
+
+- tenant/domain FAQ lookup includes both:
+  - tenant-specific entries
+  - shared entries stored under the configured shared tenant id
+- tenant-specific entries are still ranked ahead of shared entries in repository order
+- the shared KB is intended for low-context filler prompts such as:
+  - greetings
+  - vague acknowledgements
+  - "what?"
+  - "can you help me?"
+  - "thank you"
+
+Default shared tenant id:
+
+- `__shared__`
+
+Operationally, the shared FAQ seed file lives at:
+
+- `scripts/demo_data/shared_kb.json`
 
 ## Scheduler
 

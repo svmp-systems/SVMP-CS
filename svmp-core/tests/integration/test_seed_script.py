@@ -35,6 +35,20 @@ def test_sample_seed_file_parses_into_knowledge_entries() -> None:
     assert entries[0].id == "faq-bottle-size"
 
 
+def test_shared_seed_file_parses_into_shared_knowledge_entries() -> None:
+    """The shared KB seed file should parse into shared/global knowledge entries."""
+
+    module = _load_seed_module()
+    sample_file = Path(__file__).resolve().parents[3] / "scripts" / "demo_data" / "shared_kb.json"
+
+    entries = module.load_seed_entries(sample_file)
+
+    assert len(entries) >= 10
+    assert entries[0].tenant_id == "__shared__"
+    assert entries[0].domain_id == "general"
+    assert entries[0].tags[0] == "shared"
+
+
 def test_seed_transform_applies_top_level_tenant_to_all_entries(tmp_path: Path) -> None:
     """Top-level tenantId should be propagated into each transformed entry."""
 

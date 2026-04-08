@@ -89,11 +89,17 @@ class InMemoryKnowledgeRepository(KnowledgeBaseRepository):
         tenant_id: str,
         domain_id: str,
     ) -> list[KnowledgeEntry]:
-        return [
+        tenant_entries = [
             entry.model_copy(deep=True)
             for entry in self._entries
             if entry.tenant_id == tenant_id and entry.domain_id == domain_id and entry.active
         ]
+        shared_entries = [
+            entry.model_copy(deep=True)
+            for entry in self._entries
+            if entry.tenant_id == "__shared__" and entry.domain_id == domain_id and entry.active
+        ]
+        return [*tenant_entries, *shared_entries]
 
 
 class CapturingGovernanceRepository(GovernanceLogRepository):
@@ -292,6 +298,42 @@ async def test_workflow_b_answers_high_confidence_informational_query(
     assert session.processing is True
     assert session.messages == []
     assert session.context == ["What do you do?"]
+
+
+@pytest.mark.asyncio
+async def test_workflow_b_can_answer_from_shared_kb_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shared/global KB entries should be available to every tenant during matching."""
+
+    async def fake_generate_completion(**kwargs) -> str:
+        assert '"question": "Hi"' in kwargs["user_prompt"]
+        return '{"bestIndex": 0, "similarityScore": 0.95, "reason": "shared greeting entry is the best match"}'
+
+    monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+
+    database = ProcessingDatabase(
+        sessions=[_ready_session(text="Hi")],
+        knowledge_entries=[
+            KnowledgeEntry(
+                _id="shared-hi",
+                tenantId="__shared__",
+                domainId="general",
+                question="Hi",
+                answer="Hi! I can help with products, pricing, shipping, or support.",
+            )
+        ],
+        tenants=[_tenant(threshold=0.75)],
+    )
+
+    result = await run_workflow_b(
+        database,
+        settings=_settings(),
+        now=datetime(2026, 3, 30, 10, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.decision == GovernanceDecision.ANSWERED
+    assert result.answer_supplied == "Hi! I can help with products, pricing, shipping, or support."
 
 
 @pytest.mark.asyncio
