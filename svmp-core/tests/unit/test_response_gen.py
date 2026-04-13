@@ -62,6 +62,35 @@ async def test_generate_customer_response_uses_completion_wrapper(
 
 
 @pytest.mark.asyncio
+async def test_generate_customer_response_includes_brand_voice_guidance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Configured tenant brand voice should be included in the rewrite prompt."""
+
+    captured: dict[str, str] = {}
+
+    async def fake_generate_completion(**kwargs) -> str:
+        captured.update(kwargs)
+        return "Warm and polished answer."
+
+    monkeypatch.setattr(
+        "svmp_core.core.response_gen.generate_completion",
+        fake_generate_completion,
+    )
+
+    result = await generate_customer_response(
+        "What do you guys do?",
+        knowledge_entry=_knowledge_entry(),
+        brand_voice="Warm, polished, and premium. Avoid slang.",
+        settings=_settings(),
+    )
+
+    assert result == "Warm and polished answer."
+    assert "brand voice guidance" in captured["system_prompt"]
+    assert "Tenant brand voice guidance: Warm, polished, and premium. Avoid slang." in captured["user_prompt"]
+
+
+@pytest.mark.asyncio
 async def test_generate_customer_response_returns_no_match_fallback() -> None:
     """Missing KB matches should return a safe human-handoff fallback."""
 

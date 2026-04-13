@@ -33,6 +33,7 @@ def test_sample_tenant_seed_file_parses_into_document() -> None:
     assert tenant_document["settings"]["confidenceThreshold"] == 0.75
     assert tenant_document["domains"][0]["domainId"] == "general"
     assert tenant_document["channels"]["twilio"]["whatsappNumbers"] == ["whatsapp:+14155238886"]
+    assert "premium fragrance advisor" in tenant_document["brandVoice"]
 
 
 @pytest.mark.asyncio
@@ -48,7 +49,8 @@ async def test_seed_tenant_from_file_uses_writer_upsert_path(tmp_path: Path) -> 
             '"domains": [{"domainId": "general", "name": "General", "description": "General help"}],'
             '"channels": {"twilio": {"whatsappNumbers": ["whatsapp:+14155238886"]}},'
             '"settings": {"confidenceThreshold": 0.8},'
-            '"tags": ["demo"]'
+            '"tags": ["demo"],'
+            '"brandVoice": "Warm and polished."'
             "}"
         ),
         encoding="utf-8",
@@ -71,6 +73,7 @@ async def test_seed_tenant_from_file_uses_writer_upsert_path(tmp_path: Path) -> 
     assert writer.document["tenantId"] == "Stay"
     assert writer.document["channels"]["twilio"]["whatsappNumbers"] == ["whatsapp:+14155238886"]
     assert writer.document["settings"]["confidenceThreshold"] == 0.8
+    assert writer.document["brandVoice"] == "Warm and polished."
 
 
 @pytest.mark.asyncio

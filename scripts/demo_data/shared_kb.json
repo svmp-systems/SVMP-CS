@@ -1,0 +1,101 @@
+{
+  "tenantId": "__shared__",
+  "entries": [
+    {
+      "_id": "shared-faq-hi",
+      "domainId": "general",
+      "question": "Hi",
+      "answer": "Hi! I can help with questions about products, pricing, shipping, orders, or support. What would you like to know?",
+      "tags": ["shared", "greeting", "starter"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-hello",
+      "domainId": "general",
+      "question": "Hello",
+      "answer": "Hello! I can help you with quick questions about the brand, products, pricing, shipping, or support. What would you like help with?",
+      "tags": ["shared", "greeting", "starter"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-hey",
+      "domainId": "general",
+      "question": "Hey",
+      "answer": "Hey! I'm here to help. You can ask me about products, prices, shipping, availability, or support.",
+      "tags": ["shared", "greeting", "starter"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-help",
+      "domainId": "general",
+      "question": "Can you help me?",
+      "answer": "Yes. Tell me what you need help with, like product recommendations, pricing, delivery, order help, or brand details.",
+      "tags": ["shared", "help", "starter"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-what",
+      "domainId": "general",
+      "question": "What?",
+      "answer": "I can help once I have a bit more detail. Could you tell me what you want to know about, for example a product, price, shipping, or order?",
+      "tags": ["shared", "clarification", "low-context"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-tell-me-more",
+      "domainId": "general",
+      "question": "Tell me more",
+      "answer": "Sure. Tell me which part you want to know more about, such as the product, pricing, shipping, availability, or support.",
+      "tags": ["shared", "clarification", "low-context"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-okay",
+      "domainId": "general",
+      "question": "Okay",
+      "answer": "Got it. What would you like to ask next?",
+      "tags": ["shared", "acknowledgement", "low-context"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-thanks",
+      "domainId": "general",
+      "question": "Thanks",
+      "answer": "You're welcome. If you want, I can also help with products, pricing, shipping, or order-related questions.",
+      "tags": ["shared", "gratitude", "closer"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-thank-you",
+      "domainId": "general",
+      "question": "Thank you",
+      "answer": "You're welcome. I'm here if you need anything else.",
+      "tags": ["shared", "gratitude", "closer"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-who-are-you",
+      "domainId": "general",
+      "question": "Who are you?",
+      "answer": "I'm the support assistant for this business. I can help with common questions and route you to a human when needed.",
+      "tags": ["shared", "identity", "starter"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-what-can-you-do",
+      "domainId": "general",
+      "question": "What can you do?",
+      "answer": "I can answer common questions about the business, products, pricing, shipping, availability, and support, and I can escalate when needed.",
+      "tags": ["shared", "capabilities", "starter"],
+      "active": true
+    },
+    {
+      "_id": "shared-faq-no-context",
+      "domainId": "general",
+      "question": "I have a question",
+      "answer": "Sure. Please send the question or topic you want help with, and I’ll do my best to answer it.",
+      "tags": ["shared", "clarification", "starter"],
+      "active": true
+    }
+  ]
+}

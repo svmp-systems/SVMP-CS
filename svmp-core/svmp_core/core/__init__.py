@@ -14,6 +14,7 @@ from svmp_core.core.governance import (
     build_governance_log,
 )
 from svmp_core.core.identity_frame import IdentityFrame
+from svmp_core.core.onboarding import run_tenant_onboarding_pipeline
 from svmp_core.core.response_gen import generate_customer_response
 from svmp_core.core.similarity_gate import SimilarityDecision, SimilarityOutcome, evaluate_similarity
 
@@ -31,5 +32,6 @@ __all__ = [
     "choose_domain",
     "evaluate_similarity",
     "generate_customer_response",
+    "run_tenant_onboarding_pipeline",
     "request_escalation",
 ]

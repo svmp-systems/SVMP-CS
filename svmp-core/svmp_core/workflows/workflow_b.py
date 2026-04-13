@@ -10,7 +10,12 @@ from datetime import datetime, timezone
 from time import perf_counter
 from typing import Any
 
-from svmp_core.config import Settings, get_settings, get_tenant_confidence_threshold
+from svmp_core.config import (
+    Settings,
+    get_settings,
+    get_tenant_brand_voice,
+    get_tenant_confidence_threshold,
+)
 from svmp_core.core import (
     EscalationTarget,
     IdentityFrame,
@@ -18,10 +23,11 @@ from svmp_core.core import (
     build_escalated_log,
     choose_domain,
     evaluate_similarity,
+    generate_customer_response,
     request_escalation,
 )
 from svmp_core.db.base import Database
-from svmp_core.exceptions import DatabaseError, RoutingError
+from svmp_core.exceptions import DatabaseError, IntegrationError, RoutingError
 from svmp_core.integrations import generate_completion, get_whatsapp_provider
 from svmp_core.models import (
     GovernanceDecision,
@@ -588,9 +594,23 @@ async def run_workflow_b(
 
         if similarity_decision.should_answer and openai_match.entry is not None:
             matched_entry = openai_match.entry
+            brand_voice = get_tenant_brand_voice(tenant_document)
+            answer_text = matched_entry.answer
+            brand_voice_applied = False
+            if brand_voice is not None:
+                try:
+                    answer_text = await generate_customer_response(
+                        active_question,
+                        knowledge_entry=matched_entry,
+                        brand_voice=brand_voice,
+                        settings=runtime_settings,
+                    )
+                    brand_voice_applied = True
+                except IntegrationError:
+                    answer_text = matched_entry.answer
             send_result = await _send_answer_reply(
                 identity,
-                matched_entry.answer,
+                answer_text,
                 provider_name=acquired_session.provider,
                 settings=runtime_settings,
             )
@@ -599,7 +619,7 @@ async def run_workflow_b(
                 identity,
                 combined_text,
                 similarity_score=similarity_decision.score or 0.0,
-                answer_supplied=matched_entry.answer,
+                answer_supplied=answer_text,
                 metadata=_audit_metadata(
                     identity=identity,
                     session=acquired_session,
@@ -616,8 +636,10 @@ async def run_workflow_b(
                         "activeQuestion": conversation.active_question,
                         "activeMessages": conversation.active_messages,
                         "context": conversation.context,
-                        **typing_metadata,
-                        **matcher_metadata,
+                        "matchedQuestion": matched_entry.question,
+                        "sourceAnswer": matched_entry.answer,
+                        "brandVoiceConfigured": brand_voice is not None,
+                        "brandVoiceApplied": brand_voice_applied,
                         "delivery": {
                             "provider": send_result.provider,
                             "status": send_result.status,
@@ -641,7 +663,7 @@ async def run_workflow_b(
                 combined_text=combined_text,
                 domain_id=domain_id,
                 similarity_score=similarity_decision.score,
-                answer_supplied=matched_entry.answer,
+                answer_supplied=answer_text,
                 outbound_send_result=send_result,
                 escalation_target=None,
                 reason=similarity_decision.reason,

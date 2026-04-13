@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     MONGODB_KB_COLLECTION: str = "knowledge_base"
     MONGODB_GOVERNANCE_COLLECTION: str = "governance_logs"
     MONGODB_TENANTS_COLLECTION: str = "tenants"
+    SHARED_KB_TENANT_ID: str = "__shared__"
 
     OPENAI_API_KEY: SecretStr | None = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
@@ -67,6 +68,11 @@ class Settings(BaseSettings):
     SIMILARITY_THRESHOLD: float = 0.75
     WORKFLOW_B_INTERVAL_SECONDS: int = 1
     WORKFLOW_C_INTERVAL_HOURS: int = 24
+    ONBOARDING_FETCH_TIMEOUT_SECONDS: int = 10
+    ONBOARDING_MAX_SITE_PAGES: int = 8
+    ONBOARDING_MAX_PUBLIC_QA_URLS: int = 5
+    ONBOARDING_MAX_SOURCE_CHARS_PER_PAGE: int = 5000
+    ONBOARDING_FAQ_TARGET_COUNT: int = 30
 
     def validate_runtime(self) -> None:
         """Fail fast when the live runtime is missing required env values."""
@@ -131,6 +137,53 @@ def get_tenant_confidence_threshold(
         raise ValueError("tenant confidenceThreshold missing")
 
     return float(threshold)
+
+
+def get_tenant_brand_voice(
+    tenant_document: Mapping[str, Any] | None,
+) -> str | None:
+    """Resolve an optional tenant brand voice into a prompt-safe string."""
+
+    if tenant_document is None:
+        return None
+
+    brand_voice = tenant_document.get("brandVoice")
+    if brand_voice is None:
+        return None
+
+    if isinstance(brand_voice, str):
+        normalized = brand_voice.strip()
+        return normalized or None
+
+    if isinstance(brand_voice, Mapping):
+        sections: list[str] = []
+        for key, value in brand_voice.items():
+            label = str(key).strip()
+            if not label:
+                continue
+            if isinstance(value, str):
+                normalized_value = value.strip()
+                if normalized_value:
+                    sections.append(f"{label}: {normalized_value}")
+                continue
+            if isinstance(value, (list, tuple)):
+                normalized_items = [
+                    str(item).strip()
+                    for item in value
+                    if str(item).strip()
+                ]
+                if normalized_items:
+                    sections.append(f"{label}: {', '.join(normalized_items)}")
+                continue
+            if value is not None:
+                normalized_value = str(value).strip()
+                if normalized_value:
+                    sections.append(f"{label}: {normalized_value}")
+
+        return "\n".join(sections) if sections else None
+
+    normalized = str(brand_voice).strip()
+    return normalized or None
 
 
 settings = get_settings()

@@ -212,6 +212,18 @@ def test_create_app_registers_webhook_route() -> None:
         assert response.text == "12345"
 
 
+def test_create_app_registers_onboarding_route() -> None:
+    """The app should expose the tenant onboarding route after startup."""
+
+    app = create_app(settings=_settings(), database=TestDatabase(), scheduler=SchedulerStub())
+
+    with TestClient(app) as client:
+        response = client.get("/tenants/missing/onboarding-status")
+
+        assert response.status_code == 404
+        assert response.json() == {"detail": "tenant not found"}
+
+
 def test_create_app_boots_with_twilio_runtime_settings() -> None:
     """Twilio provider settings should also satisfy runtime startup validation."""
 

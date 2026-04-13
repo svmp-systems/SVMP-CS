@@ -22,6 +22,7 @@
   "settings": {
     "confidenceThreshold": 0.75
   },
+  "brandVoice": "Speak like a premium fragrance advisor: warm, polished, confident, and concise. Keep replies helpful and elegant. Avoid slang, hype, and overpromising.",
   "contactInfo": {
     "email": "support@stayparfums.example",
     "phone": "+910000000000"

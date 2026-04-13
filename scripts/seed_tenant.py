@@ -37,6 +37,7 @@ class TenantSeedSpec(BaseModel):
     tags: list[str] = Field(default_factory=list)
     channels: dict[str, Any] = Field(default_factory=dict)
     contact_info: dict[str, Any] = Field(default_factory=dict, alias="contactInfo")
+    brand_voice: str | dict[str, Any] | None = Field(default=None, alias="brandVoice")
 
     @field_validator("tenant_id")
     @classmethod

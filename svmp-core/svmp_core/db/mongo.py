@@ -159,8 +159,9 @@ class MongoSessionStateRepository(SessionStateRepository):
 class MongoKnowledgeBaseRepository(KnowledgeBaseRepository):
     """Mongo-backed repository for knowledge-base entries."""
 
-    def __init__(self, collection) -> None:
+    def __init__(self, collection, *, settings: Settings | None = None) -> None:
         self._collection = collection
+        self._settings = settings or get_settings()
 
     async def list_active_by_tenant_and_domain(
         self,
@@ -169,13 +170,49 @@ class MongoKnowledgeBaseRepository(KnowledgeBaseRepository):
     ) -> list[KnowledgeEntry]:
         cursor = self._collection.find(
             {
-                "tenantId": tenant_id,
+                "tenantId": {
+                    "$in": [
+                        tenant_id,
+                        self._settings.SHARED_KB_TENANT_ID,
+                    ]
+                },
                 "domainId": domain_id,
                 "active": True,
             }
         )
         documents = await cursor.to_list(length=None)
-        return [_to_model(KnowledgeEntry, document) for document in documents if document is not None]
+        entries = [_to_model(KnowledgeEntry, document) for document in documents if document is not None]
+        entries.sort(
+            key=lambda entry: (
+                1
+                if entry is not None and entry.tenant_id == self._settings.SHARED_KB_TENANT_ID
+                else 0,
+                entry.question if entry is not None else "",
+            )
+        )
+        return entries
+
+    async def replace_entries_for_tenant_domain(
+        self,
+        tenant_id: str,
+        domain_id: str,
+        entries: Sequence[KnowledgeEntry],
+    ) -> int:
+        await self._collection.delete_many(
+            {
+                "tenantId": tenant_id,
+                "domainId": domain_id,
+            }
+        )
+        if not entries:
+            return 0
+
+        payloads = [
+            entry.model_dump(by_alias=True, exclude_none=True)
+            for entry in entries
+        ]
+        result = await self._collection.insert_many(payloads)
+        return len(result.inserted_ids)
 
 
 class MongoGovernanceLogRepository(GovernanceLogRepository):
@@ -205,6 +242,22 @@ class MongoTenantRepository(TenantRepository):
         if "_id" in normalized:
             normalized["_id"] = _serialize_id(normalized["_id"])
         return normalized
+
+    async def upsert_tenant(self, tenant_document: Mapping[str, Any]) -> Mapping[str, Any]:
+        payload = deepcopy(dict(tenant_document))
+        tenant_id = payload.get("tenantId")
+        if not isinstance(tenant_id, str) or not tenant_id.strip():
+            raise DatabaseError("tenant document missing tenantId")
+
+        await self._collection.replace_one(
+            {"tenantId": tenant_id.strip()},
+            payload,
+            upsert=True,
+        )
+        stored = await self.get_by_tenant_id(tenant_id.strip())
+        if stored is None:
+            raise DatabaseError("failed to persist tenant document")
+        return stored
 
     async def resolve_tenant_id_for_provider(
         self,
@@ -305,7 +358,8 @@ class MongoDatabase(Database):
                 self._db[self._settings.MONGODB_SESSION_COLLECTION]
             )
             self._knowledge_base_repo = MongoKnowledgeBaseRepository(
-                self._db[self._settings.MONGODB_KB_COLLECTION]
+                self._db[self._settings.MONGODB_KB_COLLECTION],
+                settings=self._settings,
             )
             self._governance_logs_repo = MongoGovernanceLogRepository(
                 self._db[self._settings.MONGODB_GOVERNANCE_COLLECTION]

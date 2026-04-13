@@ -2,6 +2,11 @@
 
 from svmp_core.models.governance import GovernanceDecision, GovernanceLog
 from svmp_core.models.knowledge import KnowledgeEntry
+from svmp_core.models.onboarding import (
+    TenantOnboardingAccepted,
+    TenantOnboardingRequest,
+    TenantOnboardingStatusResponse,
+)
 from svmp_core.models.session import MessageItem, SessionState
 from svmp_core.models.webhook import OutboundSendResult, OutboundTextMessage, WebhookPayload
 
@@ -13,5 +18,8 @@ __all__ = [
     "OutboundSendResult",
     "OutboundTextMessage",
     "SessionState",
+    "TenantOnboardingAccepted",
+    "TenantOnboardingRequest",
+    "TenantOnboardingStatusResponse",
     "WebhookPayload",
 ]

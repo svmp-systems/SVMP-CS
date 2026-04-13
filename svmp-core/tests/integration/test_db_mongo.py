@@ -134,6 +134,8 @@ def _matches(document: dict, query: dict) -> bool:
                     return False
                 if operator == "$ne" and not (actual != operand):
                     return False
+                if operator == "$in" and actual not in operand:
+                    return False
         elif isinstance(actual, list):
             if expected not in actual:
                 return False
@@ -295,6 +297,14 @@ async def test_knowledge_governance_and_tenant_repositories() -> None:
                 "active": True,
             },
             {
+                "_id": "shared-1",
+                "tenantId": "__shared__",
+                "domainId": "general",
+                "question": "Hi",
+                "answer": "Hi! How can I help?",
+                "active": True,
+            },
+            {
                 "_id": "faq-2",
                 "tenantId": "Niyomilan",
                 "domainId": "general",
@@ -309,13 +319,15 @@ async def test_knowledge_governance_and_tenant_repositories() -> None:
             "_id": "tenant-1",
             "tenantId": "Niyomilan",
             "settings": {"confidenceThreshold": 0.75},
+            "brandVoice": "Warm, polished, and premium.",
             "tags": ["ecom"],
         }
     )
 
     entries = await database.knowledge_base.list_active_by_tenant_and_domain("Niyomilan", "general")
-    assert len(entries) == 1
+    assert len(entries) == 2
     assert entries[0].id == "faq-1"
+    assert entries[1].id == "shared-1"
 
     log = await database.governance_logs.create(
         GovernanceLog(
@@ -334,6 +346,7 @@ async def test_knowledge_governance_and_tenant_repositories() -> None:
     assert tenant is not None
     assert tenant["tenantId"] == "Niyomilan"
     assert tenant["settings"]["confidenceThreshold"] == 0.75
+    assert tenant["brandVoice"] == "Warm, polished, and premium."
 
 
 @pytest.mark.asyncio

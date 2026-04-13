@@ -16,6 +16,7 @@ async def generate_customer_response(
     query: str,
     *,
     knowledge_entry: KnowledgeEntry | None,
+    brand_voice: str | None = None,
     settings: Settings | None = None,
 ) -> str:
     """Generate a customer-facing answer from a matched KB entry when available."""
@@ -31,6 +32,7 @@ async def generate_customer_response(
         return _NO_MATCH_RESPONSE
 
     runtime_settings = settings or get_settings()
+    normalized_brand_voice = brand_voice.strip() if isinstance(brand_voice, str) else ""
 
     system_prompt = (
         "You are a helpful customer support assistant. "
@@ -38,11 +40,20 @@ async def generate_customer_response(
         "Be concise, clear, and customer-friendly. "
         "Do not invent policies or details that are not in the FAQ answer."
     )
+    if normalized_brand_voice:
+        system_prompt += (
+            " Adapt the final wording to the tenant's brand voice guidance while keeping the facts unchanged."
+        )
     user_prompt = (
         f"Customer question: {normalized_query}\n\n"
         f"Matched FAQ question: {knowledge_entry.question}\n"
         f"Matched FAQ answer: {knowledge_entry.answer}\n\n"
-        "Write the final reply to the customer."
+        + (
+            f"Tenant brand voice guidance: {normalized_brand_voice}\n\n"
+            if normalized_brand_voice
+            else ""
+        )
+        + "Write the final reply to the customer."
     )
 
     try:

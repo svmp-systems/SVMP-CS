@@ -2,44 +2,47 @@
 
 ## Purpose
 
-SVMP is a Mongo-backed FastAPI orchestration service for AI-assisted customer support. In the current repo state, it:
+SVMP is a Mongo-backed FastAPI service for tenant-scoped WhatsApp support automation. In the current branch, it:
 
-- accepts inbound WhatsApp messages through a provider-aware webhook layer
-- buffers fragmented customer input into a tenant-scoped session
-- processes ready sessions on a scheduler
-- retrieves tenant-scoped FAQ knowledge from MongoDB
-- decides whether to answer or escalate
-- writes a governance log for each decision
-- sends answered responses back out through the active WhatsApp provider
+- accepts tenant onboarding submissions for website-driven KB generation
+- accepts inbound WhatsApp messages through a provider-aware webhook
+- buffers customer fragments into a mutable session document
+- processes ready sessions in Workflow B on a scheduler
+- resolves a tenant domain and loads tenant/domain FAQ entries from Mongo
+- automatically includes a shared/global FAQ layer for low-context filler prompts
+- asks OpenAI to choose the best FAQ match for the current active question
+- answers or escalates through a deterministic threshold gate
+- writes one governance log per decision
+- sends answered replies through the active WhatsApp provider
 
-This document reflects the code as it exists in the repository right now.
+This document describes the code as it exists in the repository right now.
 
 ## Repository Structure
 
 ### `svmp-core/`
 
-The active product code lives here.
+Primary application code.
 
 - `svmp_core/main.py`
-  FastAPI app factory, startup lifecycle, scheduler registration
+  app factory, dependency wiring, scheduler startup
 - `svmp_core/config.py`
-  env-backed settings and fail-fast validation
+  env-backed settings and runtime validation
 - `svmp_core/routes/`
-  HTTP entrypoints, currently centered on `/webhook`
+  HTTP entrypoints, centered on `/webhook`
 - `svmp_core/workflows/`
   Workflow A, Workflow B, Workflow C
 - `svmp_core/models/`
-  typed models for webhook payloads, sessions, KB entries, governance logs, and outbound sends
+  webhook, session, knowledge, and governance models
 - `svmp_core/core/`
-  deterministic helpers for intent routing, domain routing, similarity evaluation, escalation, and governance log construction
+  routing, similarity gating, escalation, and governance helpers
 - `svmp_core/db/`
   persistence contracts and Mongo implementation
 - `svmp_core/integrations/`
-  OpenAI client wrapper plus WhatsApp provider adapters
+  OpenAI client wrapper and WhatsApp provider adapters
 
 ### `scripts/`
 
-Operational/demo scripts.
+Operational and demo scripts.
 
 - `seed_tenant.py`
 - `seed_knowledge_base.py`
@@ -49,17 +52,21 @@ Operational/demo scripts.
 
 ### `svmp-platform/`
 
-Reserved for a future platform/SaaS layer. It is not the active implementation path.
+Reserved for future platform work. It is not the active runtime path.
 
 ## Architecture Summary
 
 ```mermaid
 flowchart TD
-    A["Inbound Message"] --> B["/webhook"]
+    OA["Tenant Onboarding Form"] --> OB["POST /tenants/onboarding"]
+    OB --> OC["Background Onboarding Pipeline"]
+    OC --> H["tenants"]
+    OC --> I["knowledge_base"]
+    A["Inbound WhatsApp Message"] --> B["/webhook"]
     B --> C["Provider Resolution + Normalization"]
     C --> D["Workflow A"]
     D --> E["session_state"]
-    F["APScheduler"] --> G["Workflow B"]
+    F["APScheduler"] --> G["Workflow B (interval poll)"]
     E --> G
     H["tenants"] --> G
     I["knowledge_base"] --> G
@@ -69,30 +76,84 @@ flowchart TD
     E --> L
 ```
 
-## Runtime Components
-
 ## FastAPI Application
 
-`svmp_core/main.py` creates the application and wires runtime dependencies.
+`svmp_core/main.py` creates the app and wires the runtime.
 
 Startup behavior:
 
 - loads settings from the repo-root `.env`
-- calls `validate_runtime()` and fails fast if required values are missing
+- validates required runtime configuration
 - configures logging
 - connects MongoDB
 - registers scheduler jobs for Workflow B and Workflow C
-- starts the scheduler
+- starts `AsyncIOScheduler`
 
 HTTP endpoints:
 
 - `GET /health`
+- `POST /tenants/onboarding`
+- `GET /tenants/{tenantId}/onboarding-status`
 - `GET /webhook`
 - `POST /webhook`
 
+## Tenant Onboarding Pipeline
+
+The current branch now includes a tenant onboarding flow for bootstrapping a KB from a tenant website.
+
+High-level flow:
+
+1. A website form submits:
+   - `tenantId`
+   - `websiteUrl`
+   - `brandVoice`
+   - optional `publicQuestionUrls`
+2. `POST /tenants/onboarding` stores the tenant onboarding request in Mongo with status `queued`
+3. The app launches a background onboarding pipeline
+4. The pipeline:
+   - crawls same-origin website pages
+   - fetches any explicitly provided public-Q&A URLs
+   - asks OpenAI for a factual source brief
+   - asks OpenAI again for a large FAQ seed set
+   - merges in the shared filler FAQ seed set for greetings and low-context prompts
+   - replaces the tenant/domain FAQ slice in `knowledge_base`
+   - updates tenant onboarding status to `completed` or `failed`
+
+Current implementation notes:
+
+- generated FAQs are currently seeded into the `general` domain
+- onboarding stores `websiteUrl` and `brandVoice` directly on the tenant document
+- public-question enrichment currently supports explicit URLs provided by the caller
+- fully automatic external source discovery is not implemented yet
+
+## Shared KB Layer
+
+The runtime now supports a shared/global knowledge-base slice for all tenants.
+
+Behavior:
+
+- tenant/domain FAQ lookup includes both:
+  - tenant-specific entries
+  - shared entries stored under the configured shared tenant id
+- tenant-specific entries are still ranked ahead of shared entries in repository order
+- the shared KB is intended for low-context filler prompts such as:
+  - greetings
+  - vague acknowledgements
+  - "what?"
+  - "can you help me?"
+  - "thank you"
+
+Default shared tenant id:
+
+- `__shared__`
+
+Operationally, the shared FAQ seed file lives at:
+
+- `scripts/demo_data/shared_kb.json`
+
 ## Scheduler
 
-The runtime uses `AsyncIOScheduler`.
+The current runtime uses `AsyncIOScheduler` with recurring jobs.
 
 Registered jobs:
 
@@ -101,13 +162,13 @@ Registered jobs:
 - Workflow C
   interval job, default every `24` hours
 
-These jobs are registered once at boot and shut down with the app lifecycle.
+Workflow B is still poll-based in the current branch. It is not yet scheduled per session at exact debounce expiry.
 
 ## Environment and Runtime Contract
 
-Settings are defined in `svmp_core/config.py` and loaded from the repo-root `.env`.
+Settings live in `svmp_core/config.py` and load from `.env`.
 
-### Core App Settings
+### Core Settings
 
 - `APP_NAME`
 - `APP_ENV`
@@ -134,9 +195,9 @@ Settings are defined in `svmp_core/config.py` and loaded from the repo-root `.en
 
 Important current-state note:
 
-- these settings exist in config
-- the OpenAI client wrapper exists
-- but the current `workflow_b.py` on this branch is deterministic and does not use the OpenAI matcher path
+- OpenAI is actively used in Workflow B
+- `LLM_MODEL` defaults to `gpt-4.1`
+- `OPENAI_MATCHER_CANDIDATE_LIMIT` still exists in config, but the current Workflow B sends the full tenant/domain entry list to OpenAI rather than slicing to a limit
 
 ### WhatsApp Settings
 
@@ -178,80 +239,91 @@ Allowed providers:
 
 ## Messaging and Provider Layer
 
-## Provider Abstraction
-
-The provider interface is implemented in `svmp_core/integrations/whatsapp_provider.py`.
+The provider abstraction is implemented in `svmp_core/integrations/whatsapp_provider.py`.
 
 Current providers:
 
 - `normalized`
   accepts already-normalized internal webhook payloads and simulates outbound sends
 - `meta`
-  accepts raw Meta WhatsApp Business webhook JSON and sends outbound messages through the Graph API
+  accepts raw Meta webhook JSON and sends outbound messages through the Graph API
 - `twilio`
-  accepts Twilio `application/x-www-form-urlencoded` webhook posts and sends outbound messages through the Twilio Messages API
+  accepts Twilio form posts and sends outbound messages through the Twilio Messages API
 
-Normalized outbound models:
+Current provider capabilities:
 
-- `OutboundTextMessage`
-- `OutboundSendResult`
+- webhook verification:
+  - supported for Meta
+  - not supported for Twilio
+- inbound normalization:
+  - normalized JSON
+  - Meta JSON
+  - Twilio form payloads
+- outbound text sends:
+  - normalized simulated send
+  - Meta real send
+  - Twilio real send
+
+Important current-state note:
+
+- the current provider abstraction does not implement a typing-indicator API in this branch
+- `MessageItem` in session state does not currently persist provider message ids
 
 ## Webhook Route Behavior
 
-`POST /webhook` supports three effective intake modes:
+`POST /webhook` supports three effective intake modes.
 
 ### Normalized JSON
 
-Used for local testing and smoke verification.
+Used for local testing and smoke tests.
 
 Example:
 
 ```json
 {
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "clientId": "whatsapp",
   "userId": "9845891194",
-  "text": "What does Niyomilan do?"
+  "text": "How much do your perfumes cost?"
 }
 ```
 
-### Meta WhatsApp Webhook JSON
+### Meta Webhook JSON
 
-Used for provider-native Meta ingestion.
+Meta-native payloads are normalized into `WebhookPayload`.
 
-Important:
+Current behavior:
 
-- Meta payloads do not resolve tenant automatically yet
-- provider-native requests therefore require:
-  - `X-SVMP-Tenant-Id`
-  - or `?tenantId=...`
+- if `tenantId` is not explicitly provided, the route attempts tenant auto-resolution using provider identities from the payload
+- resolution uses tenant channel mappings in Mongo:
+  - `channels.meta.phoneNumberIds`
+  - `channels.meta.displayNumbers`
 
 ### Twilio Form Payload
 
-Used for provider-native Twilio sandbox/live ingestion.
+Twilio-native form posts are normalized into `WebhookPayload`.
 
-Important:
+Current behavior:
 
-- Twilio payloads also do not auto-resolve tenant yet
-- requests therefore require:
-  - `X-SVMP-Tenant-Id`
-  - or `?tenantId=...`
-- in practice, the Twilio sandbox webhook is configured with:
-  - `/webhook?tenantId=<tenant>&provider=twilio`
+- if `tenantId` is not explicitly provided, the route attempts tenant auto-resolution using:
+  - `To`
+  - `AccountSid`
+- resolution uses tenant channel mappings in Mongo:
+  - `channels.twilio.whatsappNumbers`
+  - `channels.twilio.accountSids`
+
+If auto-resolution fails, the route returns `400`.
 
 ### Verification
 
-`GET /webhook` supports provider verification only where the provider implements it:
+`GET /webhook`:
 
-- Meta verification uses:
-  - `hub.mode`
-  - `hub.verify_token`
-  - `hub.challenge`
-- Twilio does not use this GET verification path and returns `405`
+- Meta uses `hub.mode`, `hub.verify_token`, and `hub.challenge`
+- Twilio returns `405`
 
-### Current Response Shape
+### Response Shape
 
-Successful webhook intake currently returns:
+Successful webhook intake returns:
 
 ```json
 {
@@ -260,35 +332,43 @@ Successful webhook intake currently returns:
 }
 ```
 
-## Current Inbound Schema
+## Current Inbound and Outbound Models
 
-`WebhookPayload` is the canonical normalized inbound shape:
+`WebhookPayload`:
 
 ```json
 {
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "clientId": "whatsapp",
   "userId": "9845891194",
-  "text": "What does Niyomilan do?",
+  "text": "How much do your perfumes cost?",
   "provider": "twilio",
   "externalMessageId": "SM..."
 }
 ```
 
-Field notes:
+`OutboundTextMessage`:
 
-- `tenantId`
-  company / tenant identifier
-- `clientId`
-  source channel identifier, currently typically `whatsapp`
-- `userId`
-  source-native end user identifier
-- `provider`
-  source path such as `normalized`, `meta`, or `twilio`
-- `externalMessageId`
-  provider-native message id when available
+```json
+{
+  "tenantId": "Stay",
+  "clientId": "whatsapp",
+  "userId": "9845891194",
+  "text": "Most fragrances are priced at Rs. 1,999, with a sale price of Rs. 1,499.",
+  "provider": "twilio"
+}
+```
 
-## Core Workflows
+`OutboundSendResult`:
+
+```json
+{
+  "provider": "twilio",
+  "accepted": true,
+  "status": "accepted",
+  "externalMessageId": "SM..."
+}
+```
 
 ## Workflow A: Ingest and Debounce
 
@@ -296,24 +376,30 @@ Implemented in `svmp_core/workflows/workflow_a.py`.
 
 Purpose:
 
-- accept a normalized inbound message
-- locate the identity session by `tenantId + clientId + userId`
+- accept a normalized inbound payload
+- locate the session by `tenantId + clientId + userId`
 - create or update that session
-- append the message
+- append the new inbound message fragment
 - reset debounce timing
 - clear the processing latch
 
 Behavior:
 
-- trims and validates message text
-- converts the inbound payload into an `IdentityFrame`
-- creates a new `SessionState` if no identity session exists
-- otherwise appends the message to the existing identity session
+- trims and validates inbound text
+- converts payload into an `IdentityFrame`
+- creates a new `SessionState` when none exists
+- otherwise appends a new `MessageItem`
 - forces `status = "open"`
-- resets `debounceExpiresAt = now + DEBOUNCE_MS`
+- sets `updatedAt = now`
+- sets `debounceExpiresAt = now + DEBOUNCE_MS`
 - forces `processing = false`
 
-This is the buffering layer that collapses fragmented chat input into one later processing unit.
+Workflow A currently stores only:
+
+- message `text`
+- message `at`
+
+It does not persist `externalMessageId` into `MessageItem` in the current branch.
 
 ## Workflow B: Process, Decide, and Send
 
@@ -322,89 +408,109 @@ Implemented in `svmp_core/workflows/workflow_b.py`.
 Purpose:
 
 - acquire one ready session atomically
-- merge buffered messages into `combinedText`
-- determine whether the system can answer safely
-- send the answer through the active WhatsApp provider when one is available
-- write an immutable governance log
+- build the active question from the current debounce window
+- treat older processed windows as archived context
+- load tenant/domain KB candidates
+- use OpenAI to rank the best FAQ candidate
+- apply a deterministic similarity gate
+- answer or escalate
+- write one governance log
+- archive the processed active question into session context
 
-High-level pipeline:
+### High-Level Pipeline
 
 1. Acquire one ready session where:
-   - `status = open`
+   - `status = "open"`
    - `processing = false`
    - `debounceExpiresAt <= now`
 2. Atomically flip `processing = true`.
-3. Build `combinedText` from buffered fragments.
+3. Build a conversation view:
+   - `activeMessages`: current `session.messages`
+   - `activeQuestion`: concatenated text of current `messages`
+   - `context`: concatenated archived `session.context`
 4. Load tenant metadata.
-5. Infer intent.
-6. Resolve domain.
-7. Load active KB entries for the tenant/domain.
-8. Run deterministic FAQ matching.
-9. Apply the similarity gate.
+5. Resolve domain with `choose_domain(activeQuestion, domains, fallback_domain_id=...)`.
+6. Load all active KB entries for `tenantId + domainId`.
+7. Ask OpenAI to select `bestIndex`, `similarityScore`, and `reason`.
+8. Normalize the score into `0.0 - 1.0`.
+9. Apply `evaluate_similarity(...)`.
 10. If answered:
-    - send the answer through the active provider
-    - write an answered governance log with delivery metadata
+    - send the answer through the session’s active provider
+    - write an answered governance log
 11. If not answered:
     - write an escalated governance log
+12. Archive the processed `activeQuestion` into `session.context`.
 
-### Atomic Locking and Session Lifecycle
+### Active Question vs Context
 
-Current session state machine:
+This is the current Workflow B contract:
 
-- Workflow A sets `processing = false` whenever new input arrives
-- Workflow B acquires one ready session and sets `processing = true`
-- Workflow B does not clear the latch after processing
-- Workflow B does not close the session
-- the next inbound message through Workflow A reopens that identity session for processing by setting `processing = false`
-- Workflow C is the only cleanup path
+- `activeQuestion`
+  the concatenated messages from the current debounce window
+- `activeMessages`
+  the raw message fragments from the current debounce window
+- `context`
+  archived combined text from previous processed windows
 
-This means the same identity session is reused across messages instead of create-close-create cycling.
+OpenAI is explicitly instructed:
 
-### Intent Routing
-
-Intent classification is deterministic and keyword-based:
-
-- `informational`
-- `transactional`
-- `escalate`
-
-Non-informational queries are escalated immediately.
-
-### Domain Routing
-
-Domain selection is deterministic and based on keyword overlap against tenant domain metadata:
-
-- `domainId`
-- `name`
-- `description`
-- optional `keywords`
-
-If no explicit match is found, Workflow B may fall back to the first valid tenant domain.
+- `activeQuestion` drives candidate selection
+- `context` must not override `activeQuestion`
+- `context` may only help when `activeQuestion` clearly refers back to earlier history
 
 ### Matching Strategy
 
-The current `workflow_b.py` on this branch uses a deterministic token-overlap FAQ matcher.
+Workflow B currently uses OpenAI for candidate selection.
 
-It compares query tokens against FAQ question tokens and selects the strongest match.
+The matcher prompt asks the model to return JSON with:
+
+- `bestIndex`
+- `similarityScore`
+- `reason`
+
+Current details:
+
+- all active tenant/domain KB entries are sent as candidates
+- score may be `0-1` or `0-100`
+- Workflow B normalizes percentage-style values into `0-1`
 
 ### Similarity Gate
 
-The final decision is made through `evaluate_similarity()`:
-
-- if no candidate exists: escalate
-- if `score >= threshold`: answer
-- if `score < threshold`: escalate
+The final answer/escalate decision is deterministic.
 
 Threshold resolution:
 
 - prefer `tenants.settings.confidenceThreshold`
 - fall back to global `SIMILARITY_THRESHOLD`
 
+Decision behavior:
+
+- no candidate or weak score: escalate
+- score meeting threshold: answer
+
+### Session Lifecycle and Archiving
+
+Current session state behavior:
+
+- Workflow A reopens the session by setting `processing = false` whenever new input arrives
+- Workflow B acquires one ready session and sets `processing = true`
+- after processing, Workflow B archives the processed `activeQuestion` into `context`
+- if no newer inbound messages arrived during processing:
+  - `messages` becomes empty
+  - `processing` stays `true`
+- if newer messages did arrive during processing:
+  - only the processed prefix is archived
+  - newer messages remain in `messages`
+  - `processing` is reset to `false`
+
+This means the same identity session is reused over time rather than being closed after each answer.
+
 ### Outbound Send Behavior
 
 When Workflow B answers:
 
-- it resolves the active provider from `WHATSAPP_PROVIDER`
+- it resolves the outbound provider from the session provider first
+- falls back to `WHATSAPP_PROVIDER` if session provider is missing
 - builds an `OutboundTextMessage`
 - calls provider `send_text()`
 - stores delivery metadata in the answered governance log
@@ -413,7 +519,7 @@ If the outbound provider call fails:
 
 - Workflow B raises
 - the processing latch remains set
-- new inbound input through Workflow A is required to reset `processing = false`
+- new inbound input through Workflow A is required to reopen processing
 
 ## Workflow C: Cleanup
 
@@ -421,34 +527,43 @@ Implemented in `svmp_core/workflows/workflow_c.py`.
 
 Purpose:
 
-- identify stale sessions when the repository supports stale-session listing
-- optionally write closure governance logs
-- delete stale sessions
+- identify stale sessions when the session repository can enumerate them
+- optionally write closure logs
+- delete stale sessions older than the retention window
+
+Current behavior:
+
+- computes `cutoff_time = now - WORKFLOW_C_INTERVAL_HOURS`
+- if `list_stale_sessions()` exists, writes one closure governance log per stale session
+- deletes stale sessions with `delete_stale_sessions(cutoff_time)`
 
 Important current-state note:
 
-- the workflow supports closure-log creation when `list_stale_sessions()` exists
-- the Mongo repository currently exposes deletion but not stale-session enumeration
-- so in the Mongo runtime today, stale sessions are deleted but closure logs are not written by default
+- the Mongo session repository currently supports deletion but not stale-session enumeration
+- so Mongo cleanup works, but detailed stale-session closure logs are not written in the default Mongo runtime
 
-## Data Model and Schemas
+## Data Model
 
 ## `session_state`
 
-Mutable active conversation state.
+Mutable conversation/session state.
 
 ```json
 {
   "_id": "ObjectId",
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "clientId": "whatsapp",
   "userId": "9845891194",
+  "provider": "twilio",
   "status": "open",
   "processing": false,
+  "context": [
+    "What size are STAY perfume bottles?"
+  ],
   "messages": [
     {
-      "text": "What does Niyomilan do?",
-      "at": "2026-03-30T11:45:00Z"
+      "text": "Do you offer any discounts?",
+      "at": "2026-04-01T10:00:00Z"
     }
   ],
   "createdAt": "ISODate",
@@ -460,20 +575,21 @@ Mutable active conversation state.
 Notes:
 
 - identity is unique on `tenantId + clientId + userId`
-- the same identity doc is reused across inbound messages
+- `context` is a list of previously processed active-question strings
+- `messages` represents the current unprocessed debounce window
 
 ## `knowledge_base`
 
-Tenant-scoped FAQ corpus.
+Tenant/domain FAQ corpus.
 
 ```json
 {
-  "_id": "faq-about-company",
-  "tenantId": "Niyomilan",
+  "_id": "faq-pricing",
+  "tenantId": "Stay",
   "domainId": "general",
-  "question": "What does Niyomilan do?",
-  "answer": "Niyomilan helps businesses automate tier-1 customer support across channels like WhatsApp.",
-  "tags": ["about", "company"],
+  "question": "How much do STAY Parfums cost?",
+  "answer": "Most fragrances currently show a regular price of Rs. 1,999 and a sale price of Rs. 1,499.",
+  "tags": ["pricing", "perfume"],
   "active": true,
   "createdAt": "ISODate",
   "updatedAt": "ISODate"
@@ -482,47 +598,78 @@ Tenant-scoped FAQ corpus.
 
 ## `tenants`
 
-Tenant metadata, routing config, and domain definitions.
+Tenant metadata, routing config, thresholds, and provider channel mappings.
 
 ```json
 {
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "domains": [
     {
       "domainId": "general",
       "name": "General",
-      "description": "Questions about the company, support system, contact info, and policies",
-      "keywords": ["what", "company", "contact", "support", "hours", "policy"]
+      "description": "Company details, catalog questions, pricing, and support information",
+      "keywords": ["what", "price", "discount", "stock", "contact"]
     }
   ],
-  "tags": ["demo", "whatsapp"],
   "settings": {
     "confidenceThreshold": 0.75
   },
-  "contactInfo": {
-    "email": "demo@niyomilan.example",
-    "phone": "+910000000000"
+  "channels": {
+    "meta": {
+      "phoneNumberIds": ["1234567890"],
+      "displayNumbers": ["+15551234567"]
+    },
+    "twilio": {
+      "whatsappNumbers": ["whatsapp:+14155238886"],
+      "accountSids": ["AC123"]
+    }
   }
 }
 ```
 
 ## `governance_logs`
 
-Immutable audit trail.
+Immutable audit trail for Workflow B and Workflow C outcomes.
 
 ```json
 {
   "_id": "ObjectId",
-  "tenantId": "Niyomilan",
+  "tenantId": "Stay",
   "clientId": "whatsapp",
   "userId": "9845891194",
   "decision": "answered",
-  "similarityScore": 1.0,
-  "combinedText": "What does Niyomilan do?",
-  "answerSupplied": "Niyomilan helps businesses automate tier-1 customer support across channels like WhatsApp.",
+  "similarityScore": 0.92,
+  "combinedText": "How much do STAY Parfums cost?",
+  "answerSupplied": "Most fragrances currently show a regular price of Rs. 1,999 and a sale price of Rs. 1,499.",
   "timestamp": "ISODate",
   "metadata": {
+    "workflow": "workflow_b",
+    "decision": "answered",
+    "decisionReason": "score meets or exceeds threshold",
+    "latencyMs": 742,
+    "sessionId": "session-1",
+    "provider": "twilio",
+    "identity": {
+      "tenantId": "Stay",
+      "clientId": "whatsapp",
+      "userId": "9845891194"
+    },
+    "similarity": {
+      "score": 0.92,
+      "threshold": 0.75,
+      "outcome": "pass",
+      "candidateFound": true
+    },
     "domainId": "general",
+    "activeQuestion": "How much do STAY Parfums cost?",
+    "activeMessages": [
+      "How much do STAY Parfums cost?"
+    ],
+    "context": "What size are STAY perfume bottles?",
+    "matchedQuestion": "How much do STAY Parfums cost?",
+    "matcherUsed": "openai",
+    "matcherReason": "selected by OpenAI matcher",
+    "candidatesConsidered": 10,
     "delivery": {
       "provider": "twilio",
       "status": "accepted",
@@ -531,13 +678,6 @@ Immutable audit trail.
   }
 }
 ```
-
-`metadata` is intentionally extensible. In the current answered flow it includes:
-
-- `domainId`
-- `delivery.provider`
-- `delivery.status`
-- `delivery.externalMessageId`
 
 ## MongoDB Persistence and Indexes
 
@@ -562,139 +702,96 @@ Current indexes:
 - `tenants`
   - unique partial index on `tenantId`
 
-The tenant index is partial so legacy documents without `tenantId` do not block startup index creation.
+The tenant repository also supports auto-resolution of tenant ids from stored provider channel mappings.
 
-## Build and Verification Scripts
-
-## Seed Scripts
+## Seed and Verification Scripts
 
 ### `scripts/seed_tenant.py`
 
-Loads `sample_tenant.json` and upserts the demo tenant.
+Upserts the demo tenant from `scripts/demo_data/sample_tenant.json`.
 
 ### `scripts/seed_knowledge_base.py`
 
-Loads `sample_kb.json` and resets each seeded tenant/domain slice before inserting the current sample corpus. This prevents stale malformed demo rows from lingering in Atlas and breaking Workflow B.
-
-## Live Verification Script
+Loads `scripts/demo_data/sample_kb.json` and resets each seeded tenant/domain slice before inserting the current sample corpus.
 
 ### `scripts/verify_live_runtime.py`
 
-This script exists to perform a real-stack Workflow A/B check against the configured runtime.
-
-Important current-state note:
-
-- the script is present in the repo
-- but its printed result contract is behind current `WorkflowBResult`
-- it still references matcher-oriented fields that are not on the current deterministic Workflow B result
-
-So the script should be treated as implementation drift that needs refresh before it is relied on again.
+Exists for live-stack verification, but should be treated carefully if workflow/result contracts change. It is not the authoritative source of architecture.
 
 ## Current Feature Set
 
-- Mongo-first persistence
+- Mongo-backed persistence
 - fail-fast env validation
 - provider-aware webhook intake
 - normalized internal inbound schema
 - Meta webhook verification
 - Meta outbound send support
-- Twilio inbound webhook normalization
+- Twilio inbound normalization
 - Twilio outbound send support
-- tenant-scoped session buffering
-- deterministic intent routing
-- deterministic domain routing
-- deterministic FAQ matching
+- tenant auto-resolution from provider channel identities
+- tenant-scoped session buffering with archived context
+- OpenAI-based FAQ candidate selection
+- deterministic threshold gating
 - outbound reply sending for answered results
 - immutable governance logging
 - repeatable tenant and KB seed scripts
-- automated tests across config, app boot, DB adapter, workflows, webhook route, provider adapters, and smoke flows
+- automated tests across boot, DB adapter, workflows, webhook route, providers, and smoke flow
 
-## Current Operational Status
+## Known Constraints
 
-Verified in the current branch/runtime:
+### Workflow B Is Still Poll-Based
 
-- automated tests for the implemented scope
-- Atlas-backed tenant seeding
-- Atlas-backed KB seeding
-- live Workflow A to Workflow B processing
-- live Twilio Sandbox inbound webhook delivery
-- live deterministic answer selection
-- live outbound Twilio WhatsApp reply delivery
-- atomic session lock behavior with repeated inbound messages from the same user
+Workflow B still starts from a recurring interval scheduler job. That means response timing includes:
 
-Not fully verified in the current repo state:
+- debounce delay
+- up to one scheduler interval of additional wait
+- OpenAI latency
+- provider send latency
 
-- live Meta outbound/inbound verification against Meta infrastructure
-- OpenAI-driven matching inside the current `workflow_b.py`
-- automatic tenant resolution from provider account / sender mapping
+### Full Candidate List to OpenAI
 
-## Known Constraints and Design Gaps
+Workflow B currently sends the full tenant/domain FAQ list to OpenAI rather than prefiltering top candidates. This improves recall but increases latency.
 
-### Tenant Resolution at Ingress
+### No Typing Indicator Support in Current Branch
 
-The core logic is tenant-aware, but provider-native webhook requests do not auto-resolve tenant identity yet.
+There is no provider typing-indicator implementation in the current branch, and session messages do not persist provider message ids.
 
-Current behavior:
+### Outbound Failure Latch
 
-- normalized internal payloads include `tenantId`
-- Meta-native payloads require `X-SVMP-Tenant-Id` or `?tenantId=...`
-- Twilio-native payloads also require `X-SVMP-Tenant-Id` or `?tenantId=...`
+If outbound send fails after an answer decision:
 
-This is acceptable for demos and local verification, but a production multi-tenant ingress layer should derive tenant from provider account or phone-number mapping.
+- Workflow B raises
+- `processing` remains latched
+- a later inbound through Workflow A is needed to reopen the session for processing
 
-### OpenAI Drift
+### Workflow C Closure Logging in Mongo
 
-The repo still contains:
+Mongo cleanup deletes stale sessions, but detailed stale-session closure logs are only written when the repository supports stale-session enumeration.
 
-- OpenAI settings
-- the OpenAI integration wrapper
-- matcher-related config flags
-
-But the current `workflow_b.py` on this branch is deterministic-only. So the configuration surface is ahead of the active runtime implementation.
-
-### Outbound Failure Handling
-
-Answered outbound sends are now part of Workflow B.
-
-Current behavior:
-
-- successful sends are recorded in governance metadata
-- failed sends raise and bubble through Workflow B
-- the processing latch stays set until new inbound input arrives
-
-That is consistent with the current lock model, but operationally it means outbound failures can leave a session latched until the next user message.
-
-### Stale-Session Cleanup Logging
-
-Workflow C can write closure logs only when stale sessions can be enumerated before deletion.
-
-The Mongo adapter currently supports deletion but not stale-session listing, so stale Mongo sessions are cleaned up without detailed closure-log generation.
-
-## Recommended Verification Sequence
+## Recommended Verification Flow
 
 1. Run automated tests.
 2. Seed tenant data.
 3. Seed knowledge-base data.
 4. Start the app with `uvicorn`.
-5. Verify a normalized local webhook request.
-6. Verify a Meta-style payload if needed.
-7. For Twilio demo verification:
-   - start a public tunnel
-   - point Twilio Sandbox webhook to `/webhook?tenantId=<tenant>&provider=twilio`
-   - send a WhatsApp message from a sandbox-joined phone
-8. Confirm session state and governance logs in Mongo.
-9. Confirm the answer is delivered back to WhatsApp when the query is answered.
+5. Verify `/health`.
+6. Verify a normalized local webhook request.
+7. If using provider-native intake:
+   - confirm tenant channel mappings exist in Mongo
+   - send a Meta or Twilio webhook payload
+8. Confirm `session_state` and `governance_logs` in Mongo.
+9. Confirm outbound answer delivery when a query is answered.
 
 ## Summary
 
-SVMP is currently a working Mongo-backed orchestration core for customer-support automation with a provider-aware webhook layer and a live Twilio sandbox demo path.
+SVMP is currently a working Mongo-backed orchestration core for tenant-scoped WhatsApp support automation.
 
 The current branch is best described as:
 
-- code-first
 - Mongo-first
-- deterministic in Workflow B
 - provider-aware for normalized, Meta, and Twilio intake
-- capable of outbound WhatsApp replies through Meta or Twilio providers
-- tenant-aware in core logic
-- still awaiting automatic tenant resolution and a cleanup pass on stale OpenAI-era config/script drift
+- OpenAI-assisted in Workflow B
+- deterministic at the answer/escalate gate
+- session-buffered with archived context
+- tenant-aware at both ingress and decision time
+- still carrying some latency and operational tradeoffs from poll-based Workflow B and full-candidate OpenAI matching
