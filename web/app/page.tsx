@@ -171,44 +171,11 @@ export default function Home() {
           </div>
 
           <div className="overflow-hidden rounded-[8px] border border-line bg-white">
-            <div className="border-b border-line p-5">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <p className="text-[13px] text-ink/54">Stay Parfums</p>
-                  <h3 className="mt-1 text-2xl font-semibold">Support cockpit</h3>
-                </div>
-                <span className="rounded-[8px] bg-pine px-3 py-2 text-[13px] font-semibold text-white">
-                  Active tenant
-                </span>
-              </div>
-            </div>
-            <div className="grid gap-px bg-line md:grid-cols-2">
-              <div className="bg-white p-5">
-                <p className="text-[13px] text-ink/54">Incoming question</p>
-                <p className="mt-4 text-xl leading-8">
-                  "Is Stay By The Ocean available in 100 mL?"
-                </p>
-              </div>
-              <div className="bg-white p-5">
-                <p className="text-[13px] text-ink/54">Decision</p>
-                <p className="mt-4 text-xl font-semibold text-pine">Answer automatically</p>
-                <p className="mt-2 text-[15px] text-ink/62">Confidence 0.92. Source: FAQ bottle size.</p>
-              </div>
-              <div className="bg-white p-5">
-                <p className="text-[13px] text-ink/54">SVMP answer</p>
-                <p className="mt-4 text-[16px] leading-7 text-ink/70">
-                  Most STAY fragrances are offered in 100 mL bottles. Product pages list the bottle size clearly.
-                </p>
-              </div>
-              <div className="bg-white p-5">
-                <p className="text-[13px] text-ink/54">Governance record</p>
-                <ul className="mt-4 space-y-2 text-[15px] text-ink/68">
-                  <li>Matched KB entry saved</li>
-                  <li>Score and threshold saved</li>
-                  <li>Provider and timestamp saved</li>
-                </ul>
-              </div>
-            </div>
+            <img
+              src="/portal-overview.png"
+              alt="SVMP customer portal overview dashboard"
+              className="block w-full"
+            />
           </div>
         </div>
       </section>
