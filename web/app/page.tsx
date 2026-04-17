@@ -85,7 +85,7 @@ export default function Home() {
             ))}
           </div>
           <a
-            href="https://app.svmpsystems.com/login"
+            href="/login"
             className="rounded-[8px] border border-ink px-4 py-2 text-[15px] font-medium hover:bg-ink hover:text-paper"
           >
             Login
@@ -314,7 +314,7 @@ export default function Home() {
             <a href="#how-it-works" className="hover:text-ink">How it works</a>
             <a href="#dashboard" className="hover:text-ink">Dashboard</a>
             <a href="#safety" className="hover:text-ink">Safety</a>
-            <a href="https://app.svmpsystems.com/login" className="hover:text-ink">Login</a>
+            <a href="/login" className="hover:text-ink">Login</a>
           </div>
         </div>
       </footer>
