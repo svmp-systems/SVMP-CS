@@ -63,7 +63,7 @@ export default async function DashboardPage() {
                   <p className="font-semibold">{session.question}</p>
                   <StatusBadge tone={statusTone(session.status)}>{session.status}</StatusBadge>
                 </div>
-                <p className="mt-2 text-sm text-ink/60">{session.customer} · {session.timestamp}</p>
+                <p className="mt-2 text-sm text-ink/60">{session.customer} - {session.timestamp}</p>
               </Link>
             ))}
           </div>
