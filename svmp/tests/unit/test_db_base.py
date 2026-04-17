@@ -42,6 +42,7 @@ def test_session_state_repository_contract_is_present() -> None:
     assert "update_by_id" in abstract_methods
     assert "acquire_ready_session" in abstract_methods
     assert "delete_stale_sessions" in abstract_methods
+    assert hasattr(SessionStateRepository, "get_by_id")
 
 
 def test_other_repository_contracts_are_present() -> None:

@@ -54,6 +54,15 @@ class SessionStateRepository(ABC):
 
         return []
 
+    async def get_by_id(
+        self,
+        tenant_id: str,
+        session_id: str,
+    ) -> SessionState | None:
+        """Return one tenant-scoped session by id when supported."""
+
+        return None
+
 
 class KnowledgeBaseRepository(ABC):
     """Persistence contract for tenant-scoped FAQ entries."""

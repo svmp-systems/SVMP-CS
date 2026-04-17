@@ -180,6 +180,19 @@ class MongoSessionStateRepository(SessionStateRepository):
         documents = await cursor.to_list(length=bounded_limit)
         return [_to_model(SessionState, document) for document in documents if document is not None]
 
+    async def get_by_id(
+        self,
+        tenant_id: str,
+        session_id: str,
+    ) -> SessionState | None:
+        document = await self._collection.find_one(
+            {
+                "_id": _deserialize_id(session_id),
+                "tenantId": tenant_id,
+            }
+        )
+        return _to_model(SessionState, document)
+
 
 class MongoKnowledgeBaseRepository(KnowledgeBaseRepository):
     """Mongo-backed repository for knowledge-base entries."""

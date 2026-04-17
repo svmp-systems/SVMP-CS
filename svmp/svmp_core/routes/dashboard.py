@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,8 +19,10 @@ from svmp_core.auth import (
     require_role,
     require_tenant_context,
 )
+from svmp_core.config import get_settings, get_tenant_confidence_threshold
+from svmp_core.core import evaluate_similarity
 from svmp_core.db.base import Database
-from svmp_core.models import KnowledgeEntry
+from svmp_core.models import KnowledgeEntry, SessionState
 
 
 class TenantPatch(BaseModel):
@@ -82,6 +85,21 @@ class WhatsAppIntegrationPatch(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class TestQuestionRequest(BaseModel):
+    """Payload for a no-send dashboard answer preview."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    question: str = Field(min_length=1, max_length=1000)
+    domain_id: str | None = Field(default=None, alias="domainId", min_length=1, max_length=80)
+    confidence_threshold: float | None = Field(
+        default=None,
+        alias="confidenceThreshold",
+        ge=0,
+        le=1,
+    )
+
+
 def _allowed_actions(context: TenantContext) -> list[str]:
     """Return user-facing action ids permitted for the current context."""
 
@@ -134,10 +152,108 @@ def _database_from_request(request: Request) -> Database:
     return request.app.state.database
 
 
+def _settings_from_request(request: Request):
+    """Return app settings from request state, falling back to process settings."""
+
+    runtime_settings = getattr(getattr(request.app, "state", None), "settings", None)
+    return runtime_settings or get_settings()
+
+
 def _model_payload(model: BaseModel) -> dict[str, Any]:
     """Serialize a Pydantic model with public API aliases."""
 
     return model.model_dump(by_alias=True)
+
+
+def _tokens(value: str) -> set[str]:
+    """Tokenize text for deterministic KB preview matching."""
+
+    return set(re.findall(r"[a-z0-9]+", value.lower()))
+
+
+def _kb_similarity_score(question: str, entry: KnowledgeEntry) -> float:
+    """Return a conservative 0-1 lexical score for dashboard dry-runs."""
+
+    question_tokens = _tokens(question)
+    if not question_tokens:
+        return 0.0
+
+    question_text = " ".join(sorted(question_tokens))
+    entry_question_tokens = _tokens(entry.question)
+    entry_tag_tokens = _tokens(" ".join(entry.tags))
+    entry_answer_tokens = _tokens(entry.answer)
+    candidate_tokens = entry_question_tokens | entry_tag_tokens
+    if not candidate_tokens:
+        return 0.0
+
+    candidate_text = " ".join(sorted(candidate_tokens))
+    if question_text and (
+        question_text in candidate_text or candidate_text in question_text
+    ):
+        return 0.98
+
+    overlap = question_tokens & candidate_tokens
+    answer_overlap = question_tokens & entry_answer_tokens
+    if not overlap and not answer_overlap:
+        return 0.0
+
+    coverage = len(overlap) / len(question_tokens)
+    specificity = len(overlap) / len(candidate_tokens)
+    answer_support = len(answer_overlap) / len(question_tokens)
+    score = (coverage * 0.72) + (specificity * 0.18) + (answer_support * 0.10)
+    return round(min(score, 1.0), 4)
+
+
+def _best_kb_match(
+    question: str,
+    entries: Iterable[KnowledgeEntry],
+) -> tuple[KnowledgeEntry | None, float | None]:
+    """Pick the best active KB entry for a dashboard test question."""
+
+    best_entry: KnowledgeEntry | None = None
+    best_score = 0.0
+    for entry in entries:
+        score = _kb_similarity_score(question, entry)
+        if score > best_score:
+            best_entry = entry
+            best_score = score
+
+    if best_entry is None or best_score <= 0:
+        return None, None
+    return best_entry, best_score
+
+
+def _session_matches_log(
+    session: SessionState,
+    log_payload: Mapping[str, Any],
+) -> bool:
+    """Return whether a governance log belongs to a session detail view."""
+
+    metadata = log_payload.get("metadata")
+    if isinstance(metadata, Mapping) and metadata.get("sessionId") == session.id:
+        return True
+    return (
+        log_payload.get("clientId") == session.client_id
+        and log_payload.get("userId") == session.user_id
+    )
+
+
+def _session_dashboard_status(
+    session: SessionState,
+    related_logs: Iterable[Mapping[str, Any]],
+) -> str:
+    """Map workflow state into the dashboard's conversation status language."""
+
+    decisions = {
+        str(log.get("decision"))
+        for log in related_logs
+        if isinstance(log.get("decision"), str)
+    }
+    if "escalated" in decisions:
+        return "escalated"
+    if "answered" in decisions or session.status == "closed":
+        return "resolved"
+    return "pending"
 
 
 def _redact_sensitive(value: Any) -> Any:
@@ -486,6 +602,45 @@ def build_dashboard_router() -> APIRouter:
             ],
         }
 
+    @router.get("/sessions/{session_id}")
+    async def get_session_detail(
+        session_id: str,
+        request: Request,
+        context: TenantContext = Depends(require_active_subscription),
+    ) -> dict[str, Any]:
+        """Return one tenant-scoped customer conversation with related decisions."""
+
+        database = _database_from_request(request)
+        session = await database.session_state.get_by_id(context.tenant_id, session_id)
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="session not found",
+            )
+
+        governance_logs = await database.governance_logs.list_by_tenant(
+            context.tenant_id,
+            limit=250,
+        )
+        related_logs = [
+            _model_payload(log)
+            for log in governance_logs
+            if _session_matches_log(session, _model_payload(log))
+        ]
+        session_payload = {
+            **_model_payload(session),
+            "messageCount": len(session.messages),
+            "latestMessage": session.messages[-1].text if session.messages else None,
+            "transcript": [_model_payload(message) for message in session.messages],
+            "dashboardStatus": _session_dashboard_status(session, related_logs),
+        }
+
+        return {
+            "tenantId": context.tenant_id,
+            "session": session_payload,
+            "governanceLogs": related_logs,
+        }
+
     @router.get("/knowledge-base")
     async def get_knowledge_base(
         request: Request,
@@ -506,6 +661,68 @@ def build_dashboard_router() -> APIRouter:
         return {
             "tenantId": context.tenant_id,
             "entries": [_model_payload(entry) for entry in entries],
+        }
+
+    @router.post("/test-question")
+    async def test_question(
+        request: Request,
+        payload: TestQuestionRequest,
+        context: TenantContext = Depends(require_active_subscription),
+    ) -> dict[str, Any]:
+        """Dry-run a customer question against tenant KB without sending messages."""
+
+        question = payload.question.strip()
+        if not question:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="question must not be blank",
+            )
+
+        database = _database_from_request(request)
+        tenant = await _tenant_document(database, context)
+        runtime_settings = _settings_from_request(request)
+        threshold = payload.confidence_threshold
+        if threshold is None:
+            try:
+                threshold = get_tenant_confidence_threshold(tenant)
+            except ValueError:
+                threshold = runtime_settings.SIMILARITY_THRESHOLD
+
+        domain_id = payload.domain_id.strip() if payload.domain_id else None
+        if domain_id:
+            entries = await database.knowledge_base.list_active_by_tenant_and_domain(
+                context.tenant_id,
+                domain_id,
+            )
+        else:
+            entries = await database.knowledge_base.list_by_tenant(
+                context.tenant_id,
+                active=True,
+                limit=250,
+            )
+
+        matched_entry, confidence_score = _best_kb_match(question, entries)
+        decision = evaluate_similarity(
+            confidence_score,
+            threshold,
+            candidate_found=matched_entry is not None,
+        )
+        should_answer = decision.should_answer and matched_entry is not None
+
+        return {
+            "tenantId": context.tenant_id,
+            "question": question,
+            "domainId": domain_id,
+            "dryRun": True,
+            "decision": "answered" if should_answer else "escalated",
+            "response": matched_entry.answer if should_answer else None,
+            "matchedKnowledgeBaseEntry": _model_payload(matched_entry)
+            if matched_entry is not None
+            else None,
+            "confidenceScore": decision.score,
+            "threshold": decision.threshold,
+            "reason": decision.reason,
+            "entriesConsidered": len(entries),
         }
 
     @router.post("/knowledge-base", status_code=status.HTTP_201_CREATED)

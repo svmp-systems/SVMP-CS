@@ -242,6 +242,11 @@ async def test_session_repository_round_trip_and_ready_acquisition() -> None:
     assert fetched is not None
     assert fetched.id == created.id
 
+    fetched_by_id = await database.session_state.get_by_id("Niyomilan", created.id)
+    assert fetched_by_id is not None
+    assert fetched_by_id.id == created.id
+    assert await database.session_state.get_by_id("OtherTenant", created.id) is None
+
     updated = await database.session_state.update_by_id(created.id, {"status": "closed"})
     assert updated is not None
     assert updated.status == "closed"

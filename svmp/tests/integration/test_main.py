@@ -90,6 +90,16 @@ class InMemorySessionStateRepository(SessionStateRepository):
         ]
         return sorted(sessions, key=lambda session: session.updated_at, reverse=True)[:limit]
 
+    async def get_by_id(
+        self,
+        tenant_id: str,
+        session_id: str,
+    ) -> SessionState | None:
+        session = self._sessions.get(session_id)
+        if session is None or session.tenant_id != tenant_id:
+            return None
+        return session.model_copy(deep=True)
+
 
 class StubKnowledgeRepository(KnowledgeBaseRepository):
     def __init__(self, entries: list[KnowledgeEntry] | None = None) -> None:
@@ -750,7 +760,13 @@ def test_dashboard_read_endpoints_return_resolved_tenant_data() -> None:
         tenant_response = client.get("/api/tenant", params={"tenantId": "evil"}, headers=headers)
         overview_response = client.get("/api/overview", headers=headers)
         sessions_response = client.get("/api/sessions", headers=headers)
+        session_detail_response = client.get("/api/sessions/session-1", headers=headers)
         kb_response = client.get("/api/knowledge-base", params={"search": "shipping"}, headers=headers)
+        test_question_response = client.post(
+            "/api/test-question",
+            json={"question": "Do you have free shipping?"},
+            headers=headers,
+        )
         brand_response = client.get("/api/brand-voice", headers=headers)
         governance_response = client.get("/api/governance", headers=headers)
         integrations_response = client.get("/api/integrations", headers=headers)
@@ -767,8 +783,18 @@ def test_dashboard_read_endpoints_return_resolved_tenant_data() -> None:
         assert sessions_response.json()["sessions"][0]["tenantId"] == "stay"
         assert sessions_response.json()["sessions"][0]["latestMessage"] == "Do you have free shipping?"
 
+        assert session_detail_response.status_code == 200
+        assert session_detail_response.json()["session"]["_id"] == "session-1"
+        assert session_detail_response.json()["session"]["dashboardStatus"] == "resolved"
+        assert session_detail_response.json()["governanceLogs"][0]["_id"] == "log-1"
+
         assert kb_response.status_code == 200
         assert kb_response.json()["entries"][0]["_id"] == "faq-shipping"
+
+        assert test_question_response.status_code == 200
+        assert test_question_response.json()["decision"] == "answered"
+        assert test_question_response.json()["response"] == "Yes, shipping is free."
+        assert test_question_response.json()["matchedKnowledgeBaseEntry"]["_id"] == "faq-shipping"
 
         assert brand_response.status_code == 200
         assert brand_response.json()["brandVoice"]["tone"] == "Warm, polished, premium"
