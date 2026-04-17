@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from svmp_core.config import Settings
 from svmp_core.db.base import (
+    AuditLogRepository,
     Database,
     GovernanceLogRepository,
     KnowledgeBaseRepository,
@@ -123,6 +124,43 @@ class StubKnowledgeRepository(KnowledgeBaseRepository):
             ]
         return [entry.model_copy(deep=True) for entry in entries[:limit]]
 
+    async def create(self, entry: KnowledgeEntry) -> KnowledgeEntry:
+        stored = entry.model_copy(
+            update={"id": entry.id or f"faq-{len(self._entries) + 1}"},
+            deep=True,
+        )
+        self._entries.append(stored)
+        return stored.model_copy(deep=True)
+
+    async def update_by_id(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        data: Mapping[str, Any],
+    ) -> KnowledgeEntry | None:
+        for index, entry in enumerate(self._entries):
+            if entry.tenant_id != tenant_id or entry.id != entry_id:
+                continue
+            updated = entry.model_copy(update=deepcopy(dict(data)), deep=True)
+            self._entries[index] = updated
+            return updated.model_copy(deep=True)
+        return None
+
+    async def deactivate_by_id(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        data: Mapping[str, Any],
+    ) -> KnowledgeEntry | None:
+        return await self.update_by_id(
+            tenant_id,
+            entry_id,
+            {
+                **dict(data),
+                "active": False,
+            },
+        )
+
 
 class StubGovernanceRepository(GovernanceLogRepository):
     def __init__(self, logs: list[GovernanceLog] | None = None) -> None:
@@ -188,6 +226,62 @@ class StubTenantRepository(TenantRepository):
             if item.get("tenantId") == tenant_id
         ]
 
+    async def update_by_tenant_id(
+        self,
+        tenant_id: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        if self._tenant_document is None or self._tenant_document.get("tenantId") != tenant_id:
+            return None
+        for key, value in data.items():
+            if "." not in key:
+                self._tenant_document[key] = deepcopy(value)
+                continue
+            current = self._tenant_document
+            parts = key.split(".")
+            for part in parts[:-1]:
+                nested = current.get(part)
+                if not isinstance(nested, dict):
+                    nested = {}
+                    current[part] = nested
+                current = nested
+            current[parts[-1]] = deepcopy(value)
+        return deepcopy(self._tenant_document)
+
+    async def update_integration_status(
+        self,
+        tenant_id: str,
+        provider: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        for index, integration in enumerate(self._integrations):
+            if integration.get("tenantId") == tenant_id and integration.get("provider") == provider:
+                updated = {
+                    **integration,
+                    **deepcopy(dict(data)),
+                    "tenantId": tenant_id,
+                    "provider": provider,
+                }
+                self._integrations[index] = updated
+                return deepcopy(updated)
+        created = {
+            **deepcopy(dict(data)),
+            "tenantId": tenant_id,
+            "provider": provider,
+        }
+        self._integrations.append(created)
+        return deepcopy(created)
+
+
+class StubAuditRepository(AuditLogRepository):
+    def __init__(self) -> None:
+        self.logs: list[Mapping[str, Any]] = []
+
+    async def create(self, log: Mapping[str, Any]) -> Mapping[str, Any]:
+        stored = deepcopy(dict(log))
+        self.logs.append(stored)
+        return stored
+
 
 class TestDatabase(Database):
     """Database stub with lifecycle flags for app-factory tests."""
@@ -201,11 +295,13 @@ class TestDatabase(Database):
         session_repo: SessionStateRepository | None = None,
         knowledge_repo: KnowledgeBaseRepository | None = None,
         governance_repo: GovernanceLogRepository | None = None,
+        audit_repo: AuditLogRepository | None = None,
     ) -> None:
         self._session_state = session_repo or InMemorySessionStateRepository()
         self._knowledge_base = knowledge_repo or StubKnowledgeRepository()
         self._governance_logs = governance_repo or StubGovernanceRepository()
         self._tenants = tenant_repo or StubTenantRepository()
+        self._audit_logs = audit_repo or StubAuditRepository()
         self.connected = False
         self.disconnected = False
 
@@ -224,6 +320,10 @@ class TestDatabase(Database):
     @property
     def tenants(self) -> TenantRepository:
         return self._tenants
+
+    @property
+    def audit_logs(self) -> AuditLogRepository:
+        return self._audit_logs
 
     async def connect(self) -> None:
         self.connected = True
@@ -652,3 +752,228 @@ def test_dashboard_operational_reads_require_active_subscription() -> None:
 
         assert response.status_code == 402
         assert response.json()["detail"] == "active subscription required"
+
+
+def test_dashboard_write_endpoints_enforce_roles_and_write_audit_logs() -> None:
+    """Owner/admin dashboard writes should mutate tenant data and create audit logs."""
+
+    audit_repo = StubAuditRepository()
+    knowledge_repo = StubKnowledgeRepository(
+        [
+            KnowledgeEntry(
+                _id="faq-shipping",
+                tenantId="stay",
+                domainId="general",
+                question="Do you have free shipping?",
+                answer="Yes, shipping is free.",
+                tags=["shipping"],
+                active=True,
+            )
+        ]
+    )
+    database = TestDatabase(
+        tenant_repo=StubTenantRepository(
+            {
+                "tenantId": "stay",
+                "tenantName": "Stay Parfums",
+                "role": "owner",
+                "subscriptionStatus": "active",
+            },
+            tenant_document={
+                "tenantId": "stay",
+                "tenantName": "Stay Parfums",
+                "brandVoice": {"tone": "Warm"},
+                "settings": {"confidenceThreshold": 0.75},
+            },
+        ),
+        knowledge_repo=knowledge_repo,
+        audit_repo=audit_repo,
+    )
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Dashboard-Write-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            DASHBOARD_AUTH_MODE="trusted_headers",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=database,
+        scheduler=SchedulerStub(),
+    )
+    headers = {
+        "X-SVMP-User-Id": "owner_123",
+        "X-SVMP-Organization-Id": "org_123",
+        "X-SVMP-User-Email": "owner@stayparfums.com",
+    }
+
+    with TestClient(app) as client:
+        tenant_response = client.patch(
+            "/api/tenant",
+            json={
+                "tenantName": "Stay Parfums India",
+                "settings": {"confidenceThreshold": 0.82, "ignoredSetting": True},
+            },
+            headers=headers,
+        )
+        brand_response = client.patch(
+            "/api/brand-voice",
+            json={"tone": "Warm, polished", "avoid": ["overpromising"]},
+            headers=headers,
+        )
+        create_response = client.post(
+            "/api/knowledge-base",
+            json={
+                "domainId": "general",
+                "question": "What is the pair offer?",
+                "answer": "Any two eligible fragrances are available in the pair offer.",
+                "tags": ["offer"],
+                "active": True,
+            },
+            headers=headers,
+        )
+        update_response = client.patch(
+            "/api/knowledge-base/faq-shipping",
+            json={"answer": "Yes, shipping is free on all orders."},
+            headers=headers,
+        )
+        delete_response = client.delete(
+            "/api/knowledge-base/faq-shipping",
+            headers=headers,
+        )
+        integration_response = client.patch(
+            "/api/integrations/whatsapp",
+            json={"status": "connected", "health": "healthy"},
+            headers=headers,
+        )
+
+        assert tenant_response.status_code == 200
+        assert tenant_response.json()["tenantName"] == "Stay Parfums India"
+        assert tenant_response.json()["settings"]["confidenceThreshold"] == 0.82
+        assert "ignoredSetting" not in tenant_response.json()["settings"]
+
+        assert brand_response.status_code == 200
+        assert brand_response.json()["brandVoice"]["tone"] == "Warm, polished"
+        assert brand_response.json()["brandVoice"]["avoid"] == ["overpromising"]
+
+        assert create_response.status_code == 201
+        assert create_response.json()["tenantId"] == "stay"
+        assert create_response.json()["question"] == "What is the pair offer?"
+
+        assert update_response.status_code == 200
+        assert update_response.json()["answer"] == "Yes, shipping is free on all orders."
+
+        assert delete_response.status_code == 200
+        assert delete_response.json()["active"] is False
+
+        assert integration_response.status_code == 200
+        assert integration_response.json()["provider"] == "whatsapp"
+        assert integration_response.json()["status"] == "connected"
+
+    assert [
+        log["action"]
+        for log in audit_repo.logs
+    ] == [
+        "tenant.updated",
+        "brand_voice.updated",
+        "knowledge_base.created",
+        "knowledge_base.updated",
+        "knowledge_base.deactivated",
+        "integration.whatsapp.updated",
+    ]
+    assert all(log["tenantId"] == "stay" for log in audit_repo.logs)
+
+
+def test_dashboard_write_endpoints_reject_analyst_and_integration_secrets() -> None:
+    """Only owner/admin may write, and integration status cannot carry secrets."""
+
+    database = TestDatabase(
+        tenant_repo=StubTenantRepository(
+            {
+                "tenantId": "stay",
+                "tenantName": "Stay Parfums",
+                "role": "analyst",
+                "subscriptionStatus": "active",
+            },
+            tenant_document={"tenantId": "stay", "tenantName": "Stay Parfums"},
+        )
+    )
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Dashboard-Write-Role-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            DASHBOARD_AUTH_MODE="trusted_headers",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=database,
+        scheduler=SchedulerStub(),
+    )
+
+    with TestClient(app) as client:
+        role_response = client.patch(
+            "/api/brand-voice",
+            json={"tone": "Warm"},
+            headers={
+                "X-SVMP-User-Id": "analyst_123",
+                "X-SVMP-Organization-Id": "org_123",
+            },
+        )
+
+    assert role_response.status_code == 403
+
+    owner_database = TestDatabase(
+        tenant_repo=StubTenantRepository(
+            {
+                "tenantId": "stay",
+                "tenantName": "Stay Parfums",
+                "role": "owner",
+                "subscriptionStatus": "active",
+            },
+            tenant_document={"tenantId": "stay", "tenantName": "Stay Parfums"},
+        )
+    )
+    owner_app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Dashboard-Secret-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            DASHBOARD_AUTH_MODE="trusted_headers",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=owner_database,
+        scheduler=SchedulerStub(),
+    )
+
+    with TestClient(owner_app) as client:
+        secret_response = client.patch(
+            "/api/integrations/whatsapp",
+            json={"metadata": {"accessToken": "do-not-store-here"}},
+            headers={
+                "X-SVMP-User-Id": "owner_123",
+                "X-SVMP-Organization-Id": "org_123",
+            },
+        )
+
+    assert secret_response.status_code == 400
+    assert secret_response.json()["detail"] == "integration secrets must not be submitted to this endpoint"

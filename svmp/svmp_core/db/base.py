@@ -78,6 +78,31 @@ class KnowledgeBaseRepository(ABC):
 
         return []
 
+    async def create(self, entry: KnowledgeEntry) -> KnowledgeEntry:
+        """Create and return a tenant-scoped FAQ entry when supported."""
+
+        raise NotImplementedError
+
+    async def update_by_id(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        data: Mapping[str, Any],
+    ) -> KnowledgeEntry | None:
+        """Update a tenant-scoped FAQ entry when supported."""
+
+        return None
+
+    async def deactivate_by_id(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        data: Mapping[str, Any],
+    ) -> KnowledgeEntry | None:
+        """Soft-delete a tenant-scoped FAQ entry when supported."""
+
+        return await self.update_by_id(tenant_id, entry_id, data)
+
 
 class GovernanceLogRepository(ABC):
     """Persistence contract for immutable governance logs."""
@@ -109,6 +134,15 @@ class TenantRepository(ABC):
     async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
         """Return the tenant configuration document if it exists."""
 
+    async def update_by_tenant_id(
+        self,
+        tenant_id: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        """Update tenant metadata when supported."""
+
+        return None
+
     async def resolve_tenant_id_for_provider(
         self,
         *,
@@ -137,6 +171,25 @@ class TenantRepository(ABC):
 
         return []
 
+    async def update_integration_status(
+        self,
+        tenant_id: str,
+        provider: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        """Update one tenant integration status record when supported."""
+
+        return None
+
+
+class AuditLogRepository(ABC):
+    """Persistence contract for dashboard administrative audit logs."""
+
+    async def create(self, log: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Insert an audit log record when supported."""
+
+        return dict(log)
+
 
 class Database(ABC):
     """Top-level database contract for repository access and lifecycle."""
@@ -160,6 +213,12 @@ class Database(ABC):
     @abstractmethod
     def tenants(self) -> TenantRepository:
         """Return the tenant repository."""
+
+    @property
+    def audit_logs(self) -> AuditLogRepository:
+        """Return the dashboard audit-log repository."""
+
+        return AuditLogRepository()
 
     @abstractmethod
     async def connect(self) -> None:

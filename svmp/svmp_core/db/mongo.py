@@ -15,6 +15,7 @@ from pymongo import ASCENDING, DESCENDING, ReturnDocument
 
 from svmp_core.config import Settings, get_settings
 from svmp_core.db.base import (
+    AuditLogRepository,
     Database,
     GovernanceLogRepository,
     KnowledgeBaseRepository,
@@ -182,6 +183,7 @@ class MongoKnowledgeBaseRepository(KnowledgeBaseRepository):
 
     def __init__(self, collection) -> None:
         self._collection = collection
+        self._alias_map = _model_alias_map(KnowledgeEntry)
 
     async def list_active_by_tenant_and_domain(
         self,
@@ -224,6 +226,47 @@ class MongoKnowledgeBaseRepository(KnowledgeBaseRepository):
         cursor = self._collection.find(query).sort("updatedAt", DESCENDING)
         documents = await cursor.to_list(length=bounded_limit)
         return [_to_model(KnowledgeEntry, document) for document in documents if document is not None]
+
+    async def create(self, entry: KnowledgeEntry) -> KnowledgeEntry:
+        payload = entry.model_dump(by_alias=True, exclude_none=True)
+        result = await self._collection.insert_one(payload)
+        payload["_id"] = _serialize_id(result.inserted_id)
+        return KnowledgeEntry(**payload)
+
+    async def update_by_id(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        data: Mapping[str, Any],
+    ) -> KnowledgeEntry | None:
+        update_payload = {
+            self._alias_map.get(key, key): _to_storage_value(value)
+            for key, value in data.items()
+        }
+        document = await self._collection.find_one_and_update(
+            {
+                "_id": _deserialize_id(entry_id),
+                "tenantId": tenant_id,
+            },
+            {"$set": update_payload},
+            return_document=ReturnDocument.AFTER,
+        )
+        return _to_model(KnowledgeEntry, document)
+
+    async def deactivate_by_id(
+        self,
+        tenant_id: str,
+        entry_id: str,
+        data: Mapping[str, Any],
+    ) -> KnowledgeEntry | None:
+        return await self.update_by_id(
+            tenant_id,
+            entry_id,
+            {
+                **dict(data),
+                "active": False,
+            },
+        )
 
 
 class MongoGovernanceLogRepository(GovernanceLogRepository):
@@ -269,6 +312,19 @@ class MongoGovernanceLogRepository(GovernanceLogRepository):
         return counts
 
 
+class MongoAuditLogRepository(AuditLogRepository):
+    """Mongo-backed repository for dashboard administrative audit logs."""
+
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def create(self, log: Mapping[str, Any]) -> Mapping[str, Any]:
+        payload = _to_storage_value(dict(log))
+        result = await self._collection.insert_one(payload)
+        payload["_id"] = _serialize_id(result.inserted_id)
+        return _serialize_document(payload)
+
+
 class MongoTenantRepository(TenantRepository):
     """Mongo-backed repository for tenant metadata."""
 
@@ -293,6 +349,22 @@ class MongoTenantRepository(TenantRepository):
         if "_id" in normalized:
             normalized["_id"] = _serialize_id(normalized["_id"])
         return normalized
+
+    async def update_by_tenant_id(
+        self,
+        tenant_id: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        update_payload = _to_storage_value(dict(data))
+        if not update_payload:
+            return await self.get_by_tenant_id(tenant_id)
+
+        document = await self._collection.find_one_and_update(
+            {"tenantId": tenant_id},
+            {"$set": update_payload},
+            return_document=ReturnDocument.AFTER,
+        )
+        return _serialize_document(document) if isinstance(document, Mapping) else None
 
     async def resolve_tenant_id_for_provider(
         self,
@@ -416,6 +488,31 @@ class MongoTenantRepository(TenantRepository):
             if isinstance(document, Mapping)
         ]
 
+    async def update_integration_status(
+        self,
+        tenant_id: str,
+        provider: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        if self._integration_status_collection is None:
+            return None
+
+        update_payload = {
+            **_to_storage_value(dict(data)),
+            "tenantId": tenant_id,
+            "provider": provider,
+        }
+        document = await self._integration_status_collection.find_one_and_update(
+            {
+                "tenantId": tenant_id,
+                "provider": provider,
+            },
+            {"$set": update_payload},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return _serialize_document(document) if isinstance(document, Mapping) else None
+
 
 class MongoDatabase(Database):
     """Top-level Mongo database adapter that wires all repositories."""
@@ -432,6 +529,7 @@ class MongoDatabase(Database):
         self._knowledge_base_repo: MongoKnowledgeBaseRepository | None = None
         self._governance_logs_repo: MongoGovernanceLogRepository | None = None
         self._tenants_repo: MongoTenantRepository | None = None
+        self._audit_logs_repo: MongoAuditLogRepository | None = None
 
     @property
     def session_state(self) -> SessionStateRepository:
@@ -456,6 +554,12 @@ class MongoDatabase(Database):
         if self._tenants_repo is None:
             raise DatabaseError("database not connected")
         return self._tenants_repo
+
+    @property
+    def audit_logs(self) -> AuditLogRepository:
+        if self._audit_logs_repo is None:
+            raise DatabaseError("database not connected")
+        return self._audit_logs_repo
 
     async def connect(self) -> None:
         try:
@@ -487,6 +591,9 @@ class MongoDatabase(Database):
                     self._settings.MONGODB_INTEGRATION_STATUS_COLLECTION
                 ],
             )
+            self._audit_logs_repo = MongoAuditLogRepository(
+                self._db[self._settings.MONGODB_AUDIT_LOGS_COLLECTION]
+            )
         except Exception as exc:  # pragma: no cover - defensive wrapper
             raise DatabaseError("failed to connect to MongoDB") from exc
 
@@ -502,6 +609,7 @@ class MongoDatabase(Database):
             self._knowledge_base_repo = None
             self._governance_logs_repo = None
             self._tenants_repo = None
+            self._audit_logs_repo = None
 
     async def _ensure_indexes(self) -> None:
         """Create the minimum indexes required by the current workflows."""
