@@ -191,6 +191,51 @@ class AuditLogRepository(ABC):
         return dict(log)
 
 
+class BillingSubscriptionRepository(ABC):
+    """Persistence contract for Stripe subscription state."""
+
+    async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
+        """Return subscription state by tenant when supported."""
+
+        return None
+
+    async def upsert_by_tenant_id(
+        self,
+        tenant_id: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        """Upsert subscription state by tenant when supported."""
+
+        return None
+
+    async def get_by_stripe_ids(
+        self,
+        *,
+        stripe_customer_id: str | None = None,
+        stripe_subscription_id: str | None = None,
+    ) -> Mapping[str, Any] | None:
+        """Find subscription state from Stripe ids when supported."""
+
+        return None
+
+
+class ProviderEventRepository(ABC):
+    """Persistence contract for idempotent provider webhook events."""
+
+    async def record_once(
+        self,
+        *,
+        provider: str,
+        event_id: str,
+        event_type: str,
+        tenant_id: str | None,
+        payload_hash: str,
+    ) -> bool:
+        """Record a provider event, returning False for duplicates."""
+
+        return True
+
+
 class Database(ABC):
     """Top-level database contract for repository access and lifecycle."""
 
@@ -219,6 +264,18 @@ class Database(ABC):
         """Return the dashboard audit-log repository."""
 
         return AuditLogRepository()
+
+    @property
+    def billing_subscriptions(self) -> BillingSubscriptionRepository:
+        """Return the billing subscription repository."""
+
+        return BillingSubscriptionRepository()
+
+    @property
+    def provider_events(self) -> ProviderEventRepository:
+        """Return the provider-event idempotency repository."""
+
+        return ProviderEventRepository()
 
     @abstractmethod
     async def connect(self) -> None:

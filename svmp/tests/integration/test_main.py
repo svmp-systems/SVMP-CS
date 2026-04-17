@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from collections.abc import Mapping
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -12,9 +15,11 @@ from fastapi.testclient import TestClient
 from svmp_core.config import Settings
 from svmp_core.db.base import (
     AuditLogRepository,
+    BillingSubscriptionRepository,
     Database,
     GovernanceLogRepository,
     KnowledgeBaseRepository,
+    ProviderEventRepository,
     SessionStateRepository,
     TenantRepository,
 )
@@ -283,6 +288,62 @@ class StubAuditRepository(AuditLogRepository):
         return stored
 
 
+class StubBillingRepository(BillingSubscriptionRepository):
+    def __init__(self, records: list[Mapping[str, Any]] | None = None) -> None:
+        self.records = {
+            str(record["tenantId"]): deepcopy(dict(record))
+            for record in records or []
+            if "tenantId" in record
+        }
+
+    async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
+        record = self.records.get(tenant_id)
+        return deepcopy(record) if record else None
+
+    async def upsert_by_tenant_id(
+        self,
+        tenant_id: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        current = self.records.get(tenant_id, {"tenantId": tenant_id})
+        updated = {**current, **deepcopy(dict(data)), "tenantId": tenant_id}
+        self.records[tenant_id] = updated
+        return deepcopy(updated)
+
+    async def get_by_stripe_ids(
+        self,
+        *,
+        stripe_customer_id: str | None = None,
+        stripe_subscription_id: str | None = None,
+    ) -> Mapping[str, Any] | None:
+        for record in self.records.values():
+            if stripe_subscription_id and record.get("stripeSubscriptionId") == stripe_subscription_id:
+                return deepcopy(record)
+            if stripe_customer_id and record.get("stripeCustomerId") == stripe_customer_id:
+                return deepcopy(record)
+        return None
+
+
+class StubProviderEventRepository(ProviderEventRepository):
+    def __init__(self) -> None:
+        self.events: set[tuple[str, str]] = set()
+
+    async def record_once(
+        self,
+        *,
+        provider: str,
+        event_id: str,
+        event_type: str,
+        tenant_id: str | None,
+        payload_hash: str,
+    ) -> bool:
+        key = (provider, event_id)
+        if key in self.events:
+            return False
+        self.events.add(key)
+        return True
+
+
 class TestDatabase(Database):
     """Database stub with lifecycle flags for app-factory tests."""
 
@@ -296,12 +357,16 @@ class TestDatabase(Database):
         knowledge_repo: KnowledgeBaseRepository | None = None,
         governance_repo: GovernanceLogRepository | None = None,
         audit_repo: AuditLogRepository | None = None,
+        billing_repo: BillingSubscriptionRepository | None = None,
+        provider_events_repo: ProviderEventRepository | None = None,
     ) -> None:
         self._session_state = session_repo or InMemorySessionStateRepository()
         self._knowledge_base = knowledge_repo or StubKnowledgeRepository()
         self._governance_logs = governance_repo or StubGovernanceRepository()
         self._tenants = tenant_repo or StubTenantRepository()
         self._audit_logs = audit_repo or StubAuditRepository()
+        self._billing_subscriptions = billing_repo or StubBillingRepository()
+        self._provider_events = provider_events_repo or StubProviderEventRepository()
         self.connected = False
         self.disconnected = False
 
@@ -324,6 +389,14 @@ class TestDatabase(Database):
     @property
     def audit_logs(self) -> AuditLogRepository:
         return self._audit_logs
+
+    @property
+    def billing_subscriptions(self) -> BillingSubscriptionRepository:
+        return self._billing_subscriptions
+
+    @property
+    def provider_events(self) -> ProviderEventRepository:
+        return self._provider_events
 
     async def connect(self) -> None:
         self.connected = True
@@ -977,3 +1050,234 @@ def test_dashboard_write_endpoints_reject_analyst_and_integration_secrets() -> N
 
     assert secret_response.status_code == 400
     assert secret_response.json()["detail"] == "integration secrets must not be submitted to this endpoint"
+
+
+def test_billing_checkout_session_allows_inactive_owner(
+    monkeypatch,
+) -> None:
+    """Owners should be able to recover billing even when subscription is inactive."""
+
+    captured: dict[str, Any] = {}
+
+    async def fake_stripe_post(path: str, *, secret_key: str, data: Mapping[str, Any]):
+        captured["path"] = path
+        captured["secret_key"] = secret_key
+        captured["data"] = dict(data)
+        return {"id": "cs_test_123", "url": "https://checkout.stripe.test/session"}
+
+    monkeypatch.setattr("svmp_core.routes.billing._stripe_post", fake_stripe_post)
+
+    database = TestDatabase(
+        tenant_repo=StubTenantRepository(
+            {
+                "tenantId": "stay",
+                "tenantName": "Stay Parfums",
+                "role": "owner",
+                "subscriptionStatus": "past_due",
+            },
+            tenant_document={"tenantId": "stay", "tenantName": "Stay Parfums"},
+        ),
+        billing_repo=StubBillingRepository(
+            [{"tenantId": "stay", "stripeCustomerId": "cus_123", "status": "past_due"}]
+        ),
+    )
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Billing-Checkout-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            DASHBOARD_AUTH_MODE="trusted_headers",
+            DASHBOARD_APP_URL="https://app.svmpsystems.com",
+            STRIPE_SECRET_KEY="sk_test_123",
+            STRIPE_PRICE_ID="price_123",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=database,
+        scheduler=SchedulerStub(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/billing/create-checkout-session",
+            headers={
+                "X-SVMP-User-Id": "owner_123",
+                "X-SVMP-Organization-Id": "org_123",
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "id": "cs_test_123",
+        "url": "https://checkout.stripe.test/session",
+    }
+    assert captured["path"] == "/checkout/sessions"
+    assert captured["secret_key"] == "sk_test_123"
+    assert captured["data"]["customer"] == "cus_123"
+    assert captured["data"]["metadata[tenantId]"] == "stay"
+
+
+def test_billing_checkout_session_rejects_non_owner() -> None:
+    """Billing session creation should be owner-only."""
+
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Billing-Role-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            DASHBOARD_AUTH_MODE="trusted_headers",
+            STRIPE_SECRET_KEY="sk_test_123",
+            STRIPE_PRICE_ID="price_123",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=TestDatabase(
+            tenant_repo=StubTenantRepository(
+                {
+                    "tenantId": "stay",
+                    "tenantName": "Stay Parfums",
+                    "role": "admin",
+                    "subscriptionStatus": "active",
+                }
+            )
+        ),
+        scheduler=SchedulerStub(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/billing/create-checkout-session",
+            headers={
+                "X-SVMP-User-Id": "admin_123",
+                "X-SVMP-Organization-Id": "org_123",
+            },
+        )
+
+    assert response.status_code == 403
+
+
+def _stripe_signature(raw_body: bytes, secret: str) -> str:
+    timestamp = int(datetime.now(timezone.utc).timestamp())
+    signed_payload = str(timestamp).encode("utf-8") + b"." + raw_body
+    signature = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return f"t={timestamp},v1={signature}"
+
+
+def test_stripe_webhook_verifies_signature_and_processes_once() -> None:
+    """Stripe webhooks should verify signatures and process events idempotently."""
+
+    billing_repo = StubBillingRepository()
+    provider_events_repo = StubProviderEventRepository()
+    tenant_repo = StubTenantRepository(
+        {
+            "tenantId": "stay",
+            "tenantName": "Stay Parfums",
+            "role": "owner",
+            "subscriptionStatus": "none",
+        },
+        tenant_document={"tenantId": "stay", "tenantName": "Stay Parfums"},
+    )
+    database = TestDatabase(
+        tenant_repo=tenant_repo,
+        billing_repo=billing_repo,
+        provider_events_repo=provider_events_repo,
+    )
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Stripe-Webhook-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            STRIPE_WEBHOOK_SECRET="whsec_test",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=database,
+        scheduler=SchedulerStub(),
+    )
+    event = {
+        "id": "evt_123",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "client_reference_id": "stay",
+                "customer": "cus_123",
+                "subscription": "sub_123",
+                "metadata": {"tenantId": "stay"},
+            }
+        },
+    }
+    raw_body = json.dumps(event, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "Stripe-Signature": _stripe_signature(raw_body, "whsec_test"),
+        "Content-Type": "application/json",
+    }
+
+    with TestClient(app) as client:
+        first_response = client.post("/api/billing/webhook", content=raw_body, headers=headers)
+        second_response = client.post("/api/billing/webhook", content=raw_body, headers=headers)
+
+    assert first_response.status_code == 200
+    assert first_response.json()["status"] == "processed"
+    assert first_response.json()["tenantId"] == "stay"
+    assert second_response.status_code == 200
+    assert second_response.json()["status"] == "duplicate"
+
+    stored_billing = billing_repo.records["stay"]
+    assert stored_billing["status"] == "active"
+    assert stored_billing["stripeCustomerId"] == "cus_123"
+    assert stored_billing["stripeSubscriptionId"] == "sub_123"
+    assert tenant_repo._tenant_document["billing"]["status"] == "active"
+
+
+def test_stripe_webhook_rejects_invalid_signature() -> None:
+    """Stripe webhooks should reject invalid signatures before processing."""
+
+    app = create_app(
+        settings=Settings(
+            _env_file=None,
+            APP_NAME="SVMP-Stripe-Bad-Signature-Test",
+            MONGODB_URI="mongodb://unit-test",
+            OPENAI_API_KEY="test-key",
+            WHATSAPP_PROVIDER="meta",
+            WHATSAPP_TOKEN="test-whatsapp-token",
+            WHATSAPP_PHONE_NUMBER_ID="1234567890",
+            WHATSAPP_VERIFY_TOKEN="verify-me",
+            META_APP_SECRET="app-secret",
+            STRIPE_WEBHOOK_SECRET="whsec_test",
+            WORKFLOW_B_INTERVAL_SECONDS=1,
+            WORKFLOW_C_INTERVAL_HOURS=24,
+        ),
+        database=TestDatabase(),
+        scheduler=SchedulerStub(),
+    )
+    body = b'{"id":"evt_bad","type":"checkout.session.completed","data":{"object":{}}}'
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/billing/webhook",
+            content=body,
+            headers={
+                "Stripe-Signature": "t=1700000000,v1=not-valid",
+                "Content-Type": "application/json",
+            },
+        )
+
+    assert response.status_code == 400

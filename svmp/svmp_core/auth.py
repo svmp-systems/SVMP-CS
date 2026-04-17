@@ -285,12 +285,16 @@ async def require_active_subscription(
     return context
 
 
-def require_role(allowed_roles: Iterable[PortalRole | str]):
+def require_role(
+    allowed_roles: Iterable[PortalRole | str],
+    *,
+    require_subscription: bool = True,
+):
     """Return a dependency that requires one of the provided dashboard roles."""
 
     allowed = frozenset(_coerce_role(role.value if isinstance(role, PortalRole) else role) for role in allowed_roles)
 
-    async def dependency(
+    async def active_dependency(
         context: TenantContext = Depends(require_active_subscription),
     ) -> TenantContext:
         if context.role not in allowed:
@@ -300,4 +304,14 @@ def require_role(allowed_roles: Iterable[PortalRole | str]):
             )
         return context
 
-    return dependency
+    async def tenant_dependency(
+        context: TenantContext = Depends(require_tenant_context),
+    ) -> TenantContext:
+        if context.role not in allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="insufficient dashboard role",
+            )
+        return context
+
+    return active_dependency if require_subscription else tenant_dependency

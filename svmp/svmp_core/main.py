@@ -13,7 +13,7 @@ from svmp_core.config import Settings, get_dashboard_cors_origins, get_settings
 from svmp_core.db.base import Database
 from svmp_core.db.mongo import MongoDatabase
 from svmp_core.logger import configure_logging
-from svmp_core.routes import build_dashboard_router, build_webhook_router
+from svmp_core.routes import build_billing_router, build_dashboard_router, build_webhook_router
 from svmp_core.workflows import run_workflow_b, run_workflow_c
 
 
@@ -117,6 +117,7 @@ def create_app(
         return {"status": "ok"}
 
     app.include_router(build_dashboard_router())
+    app.include_router(build_billing_router())
     app.include_router(build_webhook_router(runtime_database, settings=runtime_settings))
 
     return app

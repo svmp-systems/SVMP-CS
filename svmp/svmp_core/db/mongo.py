@@ -5,20 +5,23 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, TypeVar
 
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 from pymongo import ASCENDING, DESCENDING, ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from svmp_core.config import Settings, get_settings
 from svmp_core.db.base import (
     AuditLogRepository,
+    BillingSubscriptionRepository,
     Database,
     GovernanceLogRepository,
     KnowledgeBaseRepository,
+    ProviderEventRepository,
     SessionStateRepository,
     TenantRepository,
 )
@@ -325,6 +328,82 @@ class MongoAuditLogRepository(AuditLogRepository):
         return _serialize_document(payload)
 
 
+class MongoBillingSubscriptionRepository(BillingSubscriptionRepository):
+    """Mongo-backed repository for Stripe subscription state."""
+
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
+        document = await self._collection.find_one({"tenantId": tenant_id})
+        return _serialize_document(document) if isinstance(document, Mapping) else None
+
+    async def upsert_by_tenant_id(
+        self,
+        tenant_id: str,
+        data: Mapping[str, Any],
+    ) -> Mapping[str, Any] | None:
+        payload = {
+            **_to_storage_value(dict(data)),
+            "tenantId": tenant_id,
+        }
+        document = await self._collection.find_one_and_update(
+            {"tenantId": tenant_id},
+            {"$set": payload},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return _serialize_document(document) if isinstance(document, Mapping) else None
+
+    async def get_by_stripe_ids(
+        self,
+        *,
+        stripe_customer_id: str | None = None,
+        stripe_subscription_id: str | None = None,
+    ) -> Mapping[str, Any] | None:
+        query: dict[str, Any] = {}
+        if stripe_subscription_id:
+            query["stripeSubscriptionId"] = stripe_subscription_id
+        elif stripe_customer_id:
+            query["stripeCustomerId"] = stripe_customer_id
+        else:
+            return None
+
+        document = await self._collection.find_one(query)
+        return _serialize_document(document) if isinstance(document, Mapping) else None
+
+
+class MongoProviderEventRepository(ProviderEventRepository):
+    """Mongo-backed idempotency records for provider webhooks."""
+
+    def __init__(self, collection) -> None:
+        self._collection = collection
+
+    async def record_once(
+        self,
+        *,
+        provider: str,
+        event_id: str,
+        event_type: str,
+        tenant_id: str | None,
+        payload_hash: str,
+    ) -> bool:
+        try:
+            await self._collection.insert_one(
+                {
+                    "provider": provider,
+                    "eventId": event_id,
+                    "eventType": event_type,
+                    "tenantId": tenant_id,
+                    "payloadHash": payload_hash,
+                    "processedAt": datetime.now(timezone.utc),
+                }
+            )
+        except DuplicateKeyError:
+            return False
+        return True
+
+
 class MongoTenantRepository(TenantRepository):
     """Mongo-backed repository for tenant metadata."""
 
@@ -530,6 +609,8 @@ class MongoDatabase(Database):
         self._governance_logs_repo: MongoGovernanceLogRepository | None = None
         self._tenants_repo: MongoTenantRepository | None = None
         self._audit_logs_repo: MongoAuditLogRepository | None = None
+        self._billing_subscriptions_repo: MongoBillingSubscriptionRepository | None = None
+        self._provider_events_repo: MongoProviderEventRepository | None = None
 
     @property
     def session_state(self) -> SessionStateRepository:
@@ -560,6 +641,18 @@ class MongoDatabase(Database):
         if self._audit_logs_repo is None:
             raise DatabaseError("database not connected")
         return self._audit_logs_repo
+
+    @property
+    def billing_subscriptions(self) -> BillingSubscriptionRepository:
+        if self._billing_subscriptions_repo is None:
+            raise DatabaseError("database not connected")
+        return self._billing_subscriptions_repo
+
+    @property
+    def provider_events(self) -> ProviderEventRepository:
+        if self._provider_events_repo is None:
+            raise DatabaseError("database not connected")
+        return self._provider_events_repo
 
     async def connect(self) -> None:
         try:
@@ -594,6 +687,12 @@ class MongoDatabase(Database):
             self._audit_logs_repo = MongoAuditLogRepository(
                 self._db[self._settings.MONGODB_AUDIT_LOGS_COLLECTION]
             )
+            self._billing_subscriptions_repo = MongoBillingSubscriptionRepository(
+                self._db[self._settings.MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION]
+            )
+            self._provider_events_repo = MongoProviderEventRepository(
+                self._db[self._settings.MONGODB_PROVIDER_EVENTS_COLLECTION]
+            )
         except Exception as exc:  # pragma: no cover - defensive wrapper
             raise DatabaseError("failed to connect to MongoDB") from exc
 
@@ -610,6 +709,8 @@ class MongoDatabase(Database):
             self._governance_logs_repo = None
             self._tenants_repo = None
             self._audit_logs_repo = None
+            self._billing_subscriptions_repo = None
+            self._provider_events_repo = None
 
     async def _ensure_indexes(self) -> None:
         """Create the minimum indexes required by the current workflows."""
