@@ -2,7 +2,6 @@
 
 import { useClerk } from "@clerk/nextjs";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 
 function VerificationPanel({
@@ -27,7 +26,6 @@ function VerificationPanel({
 }
 
 export function LoginVerifyClient() {
-  const router = useRouter();
   const clerk = useClerk();
   const [isActivating, setIsActivating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -39,16 +37,20 @@ export function LoginVerifyClient() {
 
     setIsActivating(true);
 
+    const completeSignIn = (to = "/dashboard") => {
+      window.location.assign(to);
+      return Promise.resolve();
+    };
+
     void clerk
       .handleEmailLinkVerification(
         {
-          redirectUrlComplete: "/dashboard",
-          redirectUrl: "/login",
+          redirectUrlComplete: `${window.location.origin}/dashboard`,
+          redirectUrl: `${window.location.origin}/login`,
         },
-        async (to) => {
-          router.replace(to);
-        },
+        completeSignIn,
       )
+      .then(() => completeSignIn())
       .catch((verificationError: unknown) => {
         const message =
           verificationError instanceof Error
@@ -57,7 +59,7 @@ export function LoginVerifyClient() {
         setError(message);
         setIsActivating(false);
       });
-  }, [clerk, isActivating, router]);
+  }, [clerk, isActivating]);
 
   if (error) {
     return (
