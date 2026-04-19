@@ -8,6 +8,7 @@ import type {
   SessionSummary,
   TenantResponse,
 } from "./types";
+import type { PreviewSession } from "@/lib/preview-auth";
 
 const now = "2026-04-19T10:30:00.000Z";
 
@@ -240,23 +241,36 @@ function overviewMetrics() {
   };
 }
 
-export function createPreviewApi(): BrowserApi {
+export function createPreviewApi(session?: Pick<PreviewSession, "email" | "tenantId" | "tenantName" | "role">): BrowserApi {
+  const me = {
+    ...previewMe,
+    email: session?.email ?? previewMe.email,
+    tenantId: session?.tenantId ?? previewMe.tenantId,
+    tenantName: session?.tenantName ?? previewMe.tenantName,
+    role: session?.role ?? previewMe.role,
+  };
+  const tenant = {
+    ...previewTenant,
+    tenantId: session?.tenantId ?? previewTenant.tenantId,
+    tenantName: session?.tenantName ?? previewTenant.tenantName,
+  };
+
   return {
-    getMe: async () => previewMe,
-    getTenant: async () => previewTenant,
+    getMe: async () => me,
+    getTenant: async () => tenant,
     saveTenant: async (payload) => ({
-      ...previewTenant,
-      tenantName: typeof payload.tenantName === "string" ? payload.tenantName : previewTenant.tenantName,
-      websiteUrl: typeof payload.websiteUrl === "string" ? payload.websiteUrl : previewTenant.websiteUrl,
-      supportEmail: typeof payload.supportEmail === "string" ? payload.supportEmail : previewTenant.supportEmail,
-      industry: typeof payload.industry === "string" ? payload.industry : previewTenant.industry,
+      ...tenant,
+      tenantName: typeof payload.tenantName === "string" ? payload.tenantName : tenant.tenantName,
+      websiteUrl: typeof payload.websiteUrl === "string" ? payload.websiteUrl : tenant.websiteUrl,
+      supportEmail: typeof payload.supportEmail === "string" ? payload.supportEmail : tenant.supportEmail,
+      industry: typeof payload.industry === "string" ? payload.industry : tenant.industry,
       settings:
         payload.settings && typeof payload.settings === "object"
-          ? { ...previewTenant.settings, ...payload.settings }
-          : previewTenant.settings,
+          ? { ...tenant.settings, ...payload.settings }
+          : tenant.settings,
     }),
     getOverview: async () => ({
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       metrics: overviewMetrics(),
       recentActivity: previewGovernanceLogs,
       setupWarnings: [],
@@ -269,7 +283,7 @@ export function createPreviewApi(): BrowserApi {
       const metrics = overviewMetrics();
 
       return {
-        tenantId: previewTenant.tenantId,
+        tenantId: tenant.tenantId,
         decisionCounts: {
           answered: metrics.aiResolved,
           escalated: metrics.humanEscalated,
@@ -281,11 +295,11 @@ export function createPreviewApi(): BrowserApi {
       };
     },
     getSessions: async () => ({
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       sessions: previewSessions,
     }),
     getSession: async (id) => ({
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       session: previewSessions.find((session) => session.id === id) ?? previewSessions[0],
       governanceLogs: previewGovernanceLogs,
     }),
@@ -304,7 +318,7 @@ export function createPreviewApi(): BrowserApi {
       });
 
       return {
-        tenantId: previewTenant.tenantId,
+        tenantId: tenant.tenantId,
         entries,
       };
     },
@@ -338,7 +352,7 @@ export function createPreviewApi(): BrowserApi {
         previewKnowledgeBase[0];
 
       return {
-        tenantId: previewTenant.tenantId,
+        tenantId: tenant.tenantId,
         question,
         domainId: match.domainId,
         dryRun: true,
@@ -352,29 +366,29 @@ export function createPreviewApi(): BrowserApi {
       };
     },
     getBrandVoice: async (): Promise<BrandVoiceResponse> => ({
-      tenantId: previewTenant.tenantId,
-      brandVoice: previewTenant.brandVoice,
+      tenantId: tenant.tenantId,
+      brandVoice: tenant.brandVoice,
     }),
     saveBrandVoice: async (payload) => ({
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       brandVoice: {
-        ...previewTenant.brandVoice,
+        ...tenant.brandVoice,
         ...payload,
       },
     }),
     getGovernance: async () => ({
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       logs: previewGovernanceLogs,
     }),
     getIntegrations: async () => ({
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       integrations: previewIntegrations,
     }),
     saveWhatsAppIntegration: async (payload) => ({
       ...previewIntegrations[0],
       ...payload,
       provider: "whatsapp",
-      tenantId: previewTenant.tenantId,
+      tenantId: tenant.tenantId,
       updatedAt: now,
     }),
     createCheckoutSession: async () => ({ id: "preview_checkout", url: "/settings?billing=preview" }),

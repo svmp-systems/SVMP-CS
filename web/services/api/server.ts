@@ -1,8 +1,10 @@
 import "server-only";
 
 import { auth } from "@clerk/nextjs/server";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { isPreviewAuthMode } from "@/lib/clerk-env";
+import { PREVIEW_SESSION_COOKIE, verifyPreviewSession } from "@/lib/preview-auth";
 import { createPreviewApi } from "./preview";
 import { createBrowserApi, type BrowserApi } from "./shared";
 
@@ -32,7 +34,14 @@ type ServerApi = Omit<BrowserApi, never>;
 
 export async function getServerApi(): Promise<ServerApi> {
   if (isPreviewAuthMode()) {
-    return createPreviewApi();
+    const cookieStore = await cookies();
+    const session = await verifyPreviewSession(cookieStore.get(PREVIEW_SESSION_COOKIE)?.value);
+
+    if (!session) {
+      redirect("/login");
+    }
+
+    return createPreviewApi(session);
   }
 
   return createBrowserApi(requireServerToken);

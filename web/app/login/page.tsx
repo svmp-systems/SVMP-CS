@@ -23,6 +23,11 @@ export default async function LoginPage({
   const organizationRequired =
     organizationState === "required" ||
     (Array.isArray(organizationState) && organizationState.includes("required"));
+  const requestedNext = params.next;
+  const nextPath =
+    typeof requestedNext === "string" && requestedNext.startsWith("/") && !requestedNext.startsWith("//")
+      ? requestedNext
+      : "/dashboard";
 
   if (userId) {
     redirect("/dashboard");
@@ -60,14 +65,14 @@ export default async function LoginPage({
             <p className="mt-3 text-sm leading-6 text-ink/62">
               {clerkConfigured
                 ? "Use your invited work email and SVMP CS will send a secure sign-in link for this browser."
-                : "Open the in-app preview portal now. Production identity checks can come back when Clerk mode is enabled."}
+                : "Use the built-in portal password. Tenant access is still resolved on the server before dashboard pages render."}
             </p>
 
             <div className="mt-8">
               {clerkConfigured ? (
                 <MagicLinkSignIn organizationRequired={organizationRequired} />
               ) : (
-                <PreviewLogin />
+                <PreviewLogin nextPath={nextPath} />
               )}
             </div>
           </div>
