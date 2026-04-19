@@ -1,5 +1,7 @@
 import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
+import { updateBrandVoiceAction } from "@/lib/actions";
+import { api } from "@/lib/api-client";
 
 const examples = [
   "Yes, that fragrance is available in the current collection.",
@@ -7,28 +9,42 @@ const examples = [
   "That offer depends on the active checkout promotion, so the final price should be confirmed at checkout.",
 ];
 
-export default function BrandVoicePage() {
+export default async function BrandVoicePage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const params = await searchParams;
+  const { brandVoice } = await api.getBrandVoice();
+  const useWords = Array.isArray(brandVoice.use) ? brandVoice.use.join("\n") : "";
+  const avoidWords = Array.isArray(brandVoice.avoid) ? brandVoice.avoid.join("\n") : "";
+  const examplesValue = Array.isArray(brandVoice.exampleReplies)
+    ? brandVoice.exampleReplies.join("\n")
+    : examples.join("\n");
+
   return (
     <>
       <PageHeader
         eyebrow="Brand voice"
         title="Control how SVMP sounds before it answers customers."
         copy="Set tone, required language, blocked language, and the escalation style used when confidence is low."
-        action={
-          <button className="rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine">
-            Save voice
-          </button>
-        }
       />
+
+      {params.error ? (
+        <div className="mb-6 rounded-[8px] border border-berry/20 bg-berry/10 p-4 text-sm font-semibold text-berry">
+          {params.error}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
         <Panel title="Voice rules" eyebrow="Editable settings">
-          <div className="grid gap-5">
+          <form action={updateBrandVoiceAction} className="grid gap-5">
             <label className="grid gap-2">
               <span className="text-sm font-semibold">Tone description</span>
               <textarea
+                name="tone"
                 rows={4}
-                defaultValue="Warm, polished, premium, concise, and helpful."
+                defaultValue={String(brandVoice.tone ?? "Warm, polished, premium, concise, and helpful.")}
                 className="rounded-[8px] border border-line bg-paper p-3 text-sm outline-none focus:border-pine"
               />
             </label>
@@ -36,16 +52,18 @@ export default function BrandVoicePage() {
               <label className="grid gap-2">
                 <span className="text-sm font-semibold">Use these words</span>
                 <textarea
+                  name="use"
                   rows={5}
-                  defaultValue={"concise\nhelpful\nconfident\nclear"}
+                  defaultValue={useWords}
                   className="rounded-[8px] border border-line bg-paper p-3 text-sm outline-none focus:border-pine"
                 />
               </label>
               <label className="grid gap-2">
                 <span className="text-sm font-semibold">Avoid these words</span>
                 <textarea
+                  name="avoid"
                   rows={5}
-                  defaultValue={"overpromising\nslang\nguaranteed forever\ncheap"}
+                  defaultValue={avoidWords}
                   className="rounded-[8px] border border-line bg-paper p-3 text-sm outline-none focus:border-pine"
                 />
               </label>
@@ -53,12 +71,25 @@ export default function BrandVoicePage() {
             <label className="grid gap-2">
               <span className="text-sm font-semibold">Escalation style</span>
               <textarea
+                name="escalationStyle"
                 rows={3}
-                defaultValue="Apologetic and clear. Say that the team will follow up because the answer depends on order-specific or policy-sensitive details."
+                defaultValue={String(brandVoice.escalationStyle ?? "Apologetic and clear. Say that the team will follow up because the answer depends on order-specific or policy-sensitive details.")}
                 className="rounded-[8px] border border-line bg-paper p-3 text-sm outline-none focus:border-pine"
               />
             </label>
-          </div>
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold">Example replies</span>
+              <textarea
+                name="exampleReplies"
+                rows={5}
+                defaultValue={examplesValue}
+                className="rounded-[8px] border border-line bg-paper p-3 text-sm outline-none focus:border-pine"
+              />
+            </label>
+            <button className="w-fit rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine">
+              Save voice
+            </button>
+          </form>
         </Panel>
 
         <div className="space-y-6">

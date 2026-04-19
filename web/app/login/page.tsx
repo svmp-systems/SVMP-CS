@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { SignIn } from "@clerk/nextjs";
 
 const checks = [
   "Google login for team members",
@@ -41,34 +42,31 @@ export default function LoginPage() {
               Use Google for the fastest access, or continue with email if your team invite was sent there.
             </p>
 
-            <div className="mt-8 space-y-3">
-              <Link
-                href="/dashboard"
-                className="flex w-full items-center justify-center rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine"
-              >
-                Continue with Google
-              </Link>
-              <form className="space-y-3">
-                <label className="block text-sm font-semibold" htmlFor="email">
-                  Email
-                </label>
-                <input
-                  id="email"
-                  type="email"
-                  placeholder="owner@stayparfums.com"
-                  className="h-12 w-full rounded-[8px] border border-line bg-paper px-3 text-sm outline-none focus:border-pine"
-                />
-                <Link
-                  href="/dashboard"
-                  className="flex w-full items-center justify-center rounded-[8px] border border-line px-4 py-3 text-sm font-semibold hover:border-ink"
-                >
-                  Send magic link
-                </Link>
-              </form>
+            <div className="mt-8">
+              <SignIn
+                routing="path"
+                path="/login"
+                forceRedirectUrl="/dashboard"
+                signUpUrl="/login"
+                appearance={{
+                  elements: {
+                    rootBox: "w-full",
+                    cardBox: "shadow-none border-0 w-full",
+                    card: "shadow-none border-0 p-0 w-full",
+                    headerTitle: "hidden",
+                    headerSubtitle: "hidden",
+                    socialButtonsBlockButton:
+                      "rounded-[8px] border-line text-sm font-semibold",
+                    formButtonPrimary:
+                      "rounded-[8px] bg-ink text-paper text-sm font-semibold hover:bg-pine",
+                    footer: "hidden",
+                  },
+                }}
+              />
             </div>
 
             <p className="mt-6 text-xs leading-5 text-ink/54">
-              Production login will use Clerk. This screen is ready for Clerk buttons and protected route redirects.
+              Google and email access are controlled in Clerk. Users need an active organization mapped to an SVMP tenant.
             </p>
           </div>
         </section>

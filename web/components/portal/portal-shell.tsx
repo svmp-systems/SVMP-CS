@@ -1,6 +1,7 @@
 "use client";
 
 import clsx from "clsx";
+import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
 import {
   BarChart3,
   BookOpen,
@@ -113,12 +114,21 @@ export function PortalShell({
                 Tenant: stay. Role: owner. Subscription: active.
               </p>
             </div>
-            <Link
-              href="/settings"
-              className="hidden rounded-[8px] border border-line bg-white px-4 py-2 text-sm font-semibold hover:border-ink lg:inline-flex"
-            >
-              Manage account
-            </Link>
+            <div className="hidden items-center gap-3 lg:flex">
+              <OrganizationSwitcher
+                afterCreateOrganizationUrl="/dashboard"
+                afterLeaveOrganizationUrl="/login"
+                afterSelectOrganizationUrl="/dashboard"
+                hidePersonal
+              />
+              <UserButton />
+              <Link
+                href="/settings"
+                className="rounded-[8px] border border-line bg-white px-4 py-2 text-sm font-semibold hover:border-ink"
+              >
+                Manage account
+              </Link>
+            </div>
           </div>
         </header>
         <main className="px-4 py-6 md:px-8 md:py-8">{children}</main>

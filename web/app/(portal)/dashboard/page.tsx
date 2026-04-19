@@ -4,11 +4,11 @@ import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
 import { StatusBadge, statusTone } from "@/components/portal/status-badge";
 import { api } from "@/lib/api-client";
-import { automationTrend, governanceLogs, sessions, topicDistribution } from "@/lib/mock-data";
+import { automationTrend, governanceLogs, topicDistribution } from "@/lib/mock-data";
 import Link from "next/link";
 
 export default async function DashboardPage() {
-  const [{ metrics }] = await Promise.all([api.getOverview()]);
+  const [{ metrics }, { sessions }] = await Promise.all([api.getOverview(), api.getSessions()]);
   const recentSessions = sessions.slice(0, 3);
 
   return (
@@ -28,7 +28,7 @@ export default async function DashboardPage() {
       />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {metrics.map((metric) => (
+        {metrics.map((metric: any) => (
           <MetricCard key={metric.label} {...metric} />
         ))}
       </div>
@@ -55,15 +55,15 @@ export default async function DashboardPage() {
           <div className="space-y-3">
             {recentSessions.map((session) => (
               <Link
-                key={session.id}
-                href={`/sessions/${session.id}`}
+                key={session.id ?? session._id}
+                href={`/sessions/${session.id ?? session._id}`}
                 className="block rounded-[8px] border border-line p-4 hover:border-ink"
               >
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <p className="font-semibold">{session.question}</p>
-                  <StatusBadge tone={statusTone(session.status)}>{session.status}</StatusBadge>
+                  <p className="font-semibold">{session.question ?? session.latestMessage ?? "Customer conversation"}</p>
+                  <StatusBadge tone={statusTone(session.status ?? session.dashboardStatus ?? "pending")}>{session.status ?? session.dashboardStatus ?? "pending"}</StatusBadge>
                 </div>
-                <p className="mt-2 text-sm text-ink/60">{session.customer} - {session.timestamp}</p>
+                <p className="mt-2 text-sm text-ink/60">{session.customer ?? session.userId ?? "Customer"} - {session.timestamp ?? session.updatedAt ?? "Latest"}</p>
               </Link>
             ))}
           </div>

@@ -1,9 +1,15 @@
 import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
 import { StatusBadge, statusTone } from "@/components/portal/status-badge";
+import { updateWhatsAppIntegrationAction } from "@/lib/actions";
 import { api } from "@/lib/api-client";
 
-export default async function IntegrationsPage() {
+export default async function IntegrationsPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string }>;
+}) {
+  const params = await searchParams;
   const { integrations } = await api.getIntegrations();
   const whatsapp = integrations.find((integration) => integration.provider === "whatsapp");
   const future = integrations.filter((integration) => integration.provider !== "whatsapp");
@@ -14,12 +20,13 @@ export default async function IntegrationsPage() {
         eyebrow="Integrations"
         title="Connect the channels SVMP is allowed to operate."
         copy="WhatsApp is the live MVP channel. Future integrations stay clearly marked until they are actually connected."
-        action={
-          <button className="rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine">
-            Configure WhatsApp
-          </button>
-        }
       />
+
+      {params.error ? (
+        <div className="mb-6 rounded-[8px] border border-berry/20 bg-berry/10 p-4 text-sm font-semibold text-berry">
+          {params.error}
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1fr_0.9fr]">
         <Panel title="WhatsApp" eyebrow="Live channel">
@@ -43,6 +50,30 @@ export default async function IntegrationsPage() {
                   <p className="mt-2 font-semibold">{whatsapp.lastSync ?? "Not synced"}</p>
                 </div>
               </div>
+
+              <form action={updateWhatsAppIntegrationAction} className="grid gap-3 rounded-[8px] border border-line p-4">
+                <p className="text-sm font-semibold">Update status</p>
+                <select name="status" defaultValue={whatsapp.status} className="h-11 rounded-[8px] border border-line bg-paper px-3 text-sm outline-none focus:border-pine">
+                  <option value="connected">Connected</option>
+                  <option value="not_connected">Not connected</option>
+                  <option value="pending">Pending</option>
+                </select>
+                <select name="health" defaultValue={whatsapp.health} className="h-11 rounded-[8px] border border-line bg-paper px-3 text-sm outline-none focus:border-pine">
+                  <option value="healthy">Healthy</option>
+                  <option value="warning">Warning</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+                <textarea
+                  name="setupWarnings"
+                  rows={3}
+                  defaultValue={(whatsapp.setupWarnings ?? []).join("\n")}
+                  className="rounded-[8px] border border-line bg-paper p-3 text-sm outline-none focus:border-pine"
+                  placeholder="One setup warning per line"
+                />
+                <button className="w-fit rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine">
+                  Save WhatsApp status
+                </button>
+              </form>
 
               <div className="rounded-[8px] border border-line p-4">
                 <p className="text-sm font-semibold">Webhook endpoint</p>

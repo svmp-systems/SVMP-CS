@@ -39,17 +39,17 @@ export default async function SessionsPage() {
           <div className="divide-y divide-line">
             {sessions.map((session) => (
               <Link
-                key={session.id}
-                href={`/sessions/${session.id}`}
+                key={session.id ?? session._id}
+                href={`/sessions/${session.id ?? session._id}`}
                 className="grid gap-3 p-4 hover:bg-paper lg:grid-cols-[1.3fr_0.7fr_0.7fr_0.7fr_0.6fr] lg:items-center"
               >
                 <div>
-                  <p className="font-semibold">{session.question}</p>
-                  <p className="mt-1 text-sm text-ink/58">{session.customer} - {session.timestamp}</p>
+                  <p className="font-semibold">{session.question ?? session.latestMessage ?? "Customer conversation"}</p>
+                  <p className="mt-1 text-sm text-ink/58">{session.customer ?? session.userId ?? "Customer"} - {session.timestamp ?? session.updatedAt ?? "Latest"}</p>
                 </div>
-                <StatusBadge tone={statusTone(session.status)}>{session.status}</StatusBadge>
+                <StatusBadge tone={statusTone(session.status ?? session.dashboardStatus ?? "pending")}>{session.status ?? session.dashboardStatus ?? "pending"}</StatusBadge>
                 <p className="text-sm font-semibold">
-                  {session.confidence === null ? "Waiting" : session.confidence.toFixed(2)}
+                  {session.confidence === null || session.confidence === undefined ? "Waiting" : session.confidence.toFixed(2)}
                 </p>
                 <p className="text-sm text-ink/64">{session.source ?? "No source yet"}</p>
                 <p className="text-sm text-ink/64">{session.provider}</p>

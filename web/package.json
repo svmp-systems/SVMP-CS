@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@clerk/nextjs": "^7.2.3",
     "clsx": "^2.1.1",
     "lucide-react": "^1.8.0",
     "next": "latest",
