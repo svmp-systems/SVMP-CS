@@ -1,13 +1,13 @@
 import { KnowledgeBaseManager } from "@/components/portal/knowledge-base-manager";
 import { PageHeader } from "@/components/portal/page-header";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
 import { redirect } from "next/navigation";
 
 export default async function KnowledgeBasePage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const [{ entries }, tenant] = await Promise.all([api.getKnowledgeBase(), api.getTenant()]);
     const threshold =
       typeof tenant.settings.confidenceThreshold === "number" ? tenant.settings.confidenceThreshold : 0.75;
@@ -26,6 +26,6 @@ export default async function KnowledgeBasePage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

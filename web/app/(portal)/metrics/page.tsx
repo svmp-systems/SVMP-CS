@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/portal/empty-state";
 import { MetricCard } from "@/components/portal/metric-card";
 import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
 import type { GovernanceLog, SessionSummary } from "@/services/api/types";
@@ -111,9 +112,8 @@ function kbGaps(sessions: SessionSummary[], logs: GovernanceLog[]) {
 }
 
 export default async function MetricsPage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const [overview, metricsResponse, sessionsResponse, governanceResponse] = await Promise.all([
       api.getOverview(),
       api.getMetrics(),
@@ -249,6 +249,6 @@ export default async function MetricsPage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

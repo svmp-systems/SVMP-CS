@@ -34,7 +34,15 @@ type RequestOptions = RequestInit & {
 
 async function parseResponse<T>(response: Response): Promise<T> {
   const raw = await response.text();
-  const payload = raw ? (JSON.parse(raw) as unknown) : null;
+  let payload: unknown = null;
+
+  if (raw) {
+    try {
+      payload = JSON.parse(raw) as unknown;
+    } catch {
+      payload = null;
+    }
+  }
 
   if (!response.ok) {
     const detail =

@@ -1,13 +1,13 @@
 import { WhatsAppConfigPanel } from "@/components/portal/whatsapp-config-panel";
 import { PageHeader } from "@/components/portal/page-header";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
 import { redirect } from "next/navigation";
 
 export default async function IntegrationsPage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const { integrations } = await api.getIntegrations();
 
     return (
@@ -24,6 +24,6 @@ export default async function IntegrationsPage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

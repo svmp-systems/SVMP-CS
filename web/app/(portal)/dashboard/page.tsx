@@ -90,9 +90,8 @@ function topicsFromSessions(sessions: SessionSummary[]) {
 }
 
 export default async function DashboardPage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const [overview, sessionsResponse, integrationsResponse] = await Promise.all([
       api.getOverview(),
       api.getSessions(),

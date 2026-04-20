@@ -1,6 +1,7 @@
 import { CheckCircle2, Circle } from "lucide-react";
 import Link from "next/link";
 import { Notice } from "@/components/portal/notice";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { StatusBadge, statusTone } from "@/components/portal/status-badge";
 import { tenantDisplayName } from "@/lib/tenant-display";
 import { getServerApi } from "@/services/api/server";
@@ -76,9 +77,8 @@ function onboardingSteps({
 }
 
 export default async function OnboardingPage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const [me, tenant, brandVoiceResponse, knowledgeBase, integrations] = await Promise.all([
       api.getMe(),
       api.getTenant(),
@@ -187,6 +187,6 @@ export default async function OnboardingPage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

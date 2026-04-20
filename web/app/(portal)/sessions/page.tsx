@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/portal/empty-state";
 import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { StatusBadge, statusTone } from "@/components/portal/status-badge";
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
@@ -40,9 +41,8 @@ function timestampLabel(session: SessionSummary) {
 }
 
 export default async function SessionsPage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const { sessions } = await api.getSessions();
 
     return (
@@ -100,6 +100,6 @@ export default async function SessionsPage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

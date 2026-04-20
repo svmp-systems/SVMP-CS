@@ -1,6 +1,7 @@
 import { EmptyState } from "@/components/portal/empty-state";
 import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { StatusBadge, statusTone } from "@/components/portal/status-badge";
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
@@ -12,9 +13,8 @@ function formatScore(score: number | null) {
 }
 
 export default async function GovernancePage() {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const { logs } = await api.getGovernance();
     const escalated = logs.filter((log) => log.decision === "escalated").length;
     const blocked = logs.filter((log) => log.decision === "blocked").length;
@@ -140,6 +140,6 @@ export default async function GovernancePage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

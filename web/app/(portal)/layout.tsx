@@ -15,9 +15,8 @@ export default function PortalLayout({
 }
 
 async function renderPortalLayout(children: React.ReactNode) {
-  const api = await getServerApi();
-
   try {
+    const api = await getServerApi();
     const [me, tenant] = await Promise.all([api.getMe(), api.getTenant()]);
     return (
       <PortalShell me={me} tenant={tenant}>

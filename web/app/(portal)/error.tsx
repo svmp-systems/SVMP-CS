@@ -1,6 +1,8 @@
 "use client";
 
-export default function PortalError({
+import Link from "next/link";
+
+export default function PortalRouteError({
   error,
   reset,
 }: {
@@ -8,19 +10,34 @@ export default function PortalError({
   reset: () => void;
 }) {
   return (
-    <div className="rounded-[8px] border border-berry/20 bg-white p-6">
-      <p className="text-sm font-semibold text-berry">Portal error</p>
-      <h1 className="mt-3 text-2xl font-semibold">The portal could not load this view.</h1>
-      <p className="mt-3 max-w-2xl text-sm leading-6 text-ink/66">
-        {error.message || "A request failed while loading portal data. Try again, or return to settings if billing or access changed."}
-      </p>
-      <button
-        type="button"
-        onClick={() => reset()}
-        className="mt-6 rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine"
-      >
-        Try again
-      </button>
-    </div>
+    <main className="flex min-h-screen items-center justify-center bg-paper p-6 text-ink md:p-10">
+      <div className="w-full max-w-xl rounded-[8px] border border-line bg-white p-6">
+        <p className="text-sm font-semibold text-pine">Customer portal</p>
+        <h1 className="mt-3 text-3xl font-semibold">This page hit a portal error</h1>
+        <p className="mt-4 text-sm leading-6 text-ink/64">
+          The portal caught the crash instead of dropping the browser into a blank server-error screen. Try again, or go back to login and start a fresh session.
+        </p>
+        {error.digest ? (
+          <p className="mt-4 rounded-[8px] border border-line bg-paper p-3 text-xs text-ink/56">
+            Error digest: {error.digest}
+          </p>
+        ) : null}
+        <div className="mt-6 flex flex-wrap gap-3">
+          <button
+            type="button"
+            onClick={reset}
+            className="rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine"
+          >
+            Try again
+          </button>
+          <Link
+            href="/login"
+            className="rounded-[8px] border border-line px-4 py-3 text-sm font-semibold hover:border-ink"
+          >
+            Back to login
+          </Link>
+        </div>
+      </div>
+    </main>
   );
 }
