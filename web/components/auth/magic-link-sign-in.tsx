@@ -24,11 +24,7 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-export function MagicLinkSignIn({
-  organizationRequired = false,
-}: {
-  organizationRequired?: boolean;
-}) {
+export function MagicLinkSignIn() {
   const router = useRouter();
   const { setActive } = useClerk();
   const { signIn, fetchStatus } = useSignIn();
@@ -39,7 +35,7 @@ export function MagicLinkSignIn({
   const [feedback, setFeedback] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
-    if (!isAwaitingVerification || !signIn?.emailLink.verification?.createdSessionId) {
+    if (!isAwaitingVerification || !signIn?.emailLink?.verification?.createdSessionId) {
       return;
     }
 
@@ -61,7 +57,11 @@ export function MagicLinkSignIn({
   }, [isAwaitingVerification, router, setActive, signIn]);
 
   async function sendMagicLink() {
-    if (!signIn) {
+    if (!signIn?.emailLink?.sendLink) {
+      setFeedback({
+        tone: "error",
+        text: "Email-link sign-in is not enabled in Clerk for this deployment yet.",
+      });
       return;
     }
 
@@ -172,11 +172,6 @@ export function MagicLinkSignIn({
         </Link>
         .
       </p>
-      {organizationRequired ? (
-        <p className="text-sm leading-6 text-berry">
-          The invite needs to place this user into the correct organization before portal access can finish.
-        </p>
-      ) : null}
     </div>
   );
 }
