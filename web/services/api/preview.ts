@@ -15,7 +15,7 @@ const now = "2026-04-19T10:30:00.000Z";
 const previewMe: MeResponse = {
   userId: "preview-owner",
   email: "prnvvh@gmail.com",
-  organizationId: "preview-svmp",
+  organizationId: "stay",
   tenantId: "stay",
   tenantName: "Stay Parfums",
   role: "owner",

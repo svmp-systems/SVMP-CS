@@ -26,12 +26,12 @@ from svmp_core.exceptions import ValidationError
 
 
 def test_authenticated_user_from_trusted_headers_requires_identity() -> None:
-    """Trusted-header scaffolding should still require user and org identity."""
+    """Trusted-header scaffolding should still require user identity."""
 
     with pytest.raises(ValidationError, match="trusted dashboard auth headers are missing"):
         authenticated_user_from_trusted_headers(
-            user_id="user_123",
-            organization_id=" ",
+            user_id=" ",
+            organization_id=None,
             email="owner@example.com",
         )
 
@@ -47,6 +47,7 @@ def test_authenticated_user_from_trusted_headers_normalizes_values() -> None:
 
     assert user.user_id == "user_123"
     assert user.organization_id == "org_123"
+    assert user.auth_provider == "trusted_headers"
     assert user.email == "owner@example.com"
 
 
@@ -54,7 +55,7 @@ def test_authenticated_user_from_trusted_headers_normalizes_values() -> None:
 async def test_authenticated_user_from_clerk_jwt_verifies_signature_and_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Clerk JWT mode should verify JWKS signature, issuer, audience, and org claim."""
+    """Clerk JWT mode should verify JWKS signature, issuer, audience, and identity claims."""
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
@@ -93,14 +94,15 @@ async def test_authenticated_user_from_clerk_jwt_verifies_signature_and_claims(
 
     assert user.user_id == "user_123"
     assert user.organization_id == "org_123"
+    assert user.auth_provider == "clerk"
     assert user.email == "owner@stayparfums.com"
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_from_clerk_jwt_requires_org_context(
+async def test_authenticated_user_from_clerk_jwt_allows_missing_org_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Clerk JWTs without active org context should not enter tenant APIs."""
+    """Mongo verified_users resolves tenant access, so Clerk org context is optional."""
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
@@ -124,18 +126,17 @@ async def test_authenticated_user_from_clerk_jwt_requires_org_context(
         headers={"kid": "test-key"},
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        await authenticated_user_from_clerk_jwt(
-            token,
-            settings=Settings(
-                _env_file=None,
-                CLERK_ISSUER="https://clerk.example",
-                CLERK_JWKS_URL="https://clerk.example/.well-known/jwks.json",
-            ),
-        )
+    user = await authenticated_user_from_clerk_jwt(
+        token,
+        settings=Settings(
+            _env_file=None,
+            CLERK_ISSUER="https://clerk.example",
+            CLERK_JWKS_URL="https://clerk.example/.well-known/jwks.json",
+        ),
+    )
 
-    assert exc_info.value.status_code == 403
-    assert exc_info.value.detail == "Clerk token missing organization context"
+    assert user.user_id == "user_123"
+    assert user.organization_id is None
 
 
 @pytest.mark.asyncio
@@ -170,8 +171,8 @@ async def test_authenticated_user_from_clerk_jwt_rejects_unsupported_algorithm()
     assert exc_info.value.detail == "unsupported Clerk token algorithm"
 
 
-def test_tenant_context_from_record_uses_backend_owned_membership_record() -> None:
-    """Tenant context should come from backend membership data, not browser tenant input."""
+def test_tenant_context_from_record_uses_backend_owned_verified_user_record() -> None:
+    """Tenant context should come from backend user access data, not browser tenant input."""
 
     user = AuthenticatedUser(
         user_id="user_123",
@@ -201,7 +202,7 @@ def test_tenant_context_from_record_uses_backend_owned_membership_record() -> No
 def test_tenant_context_from_record_defaults_unknown_role_and_subscription_safely() -> None:
     """Malformed role or subscription values should not grant access."""
 
-    user = AuthenticatedUser(user_id="user_123", organization_id="org_123")
+    user = AuthenticatedUser(user_id="user_123")
 
     context = tenant_context_from_record(
         user,
@@ -213,6 +214,7 @@ def test_tenant_context_from_record_defaults_unknown_role_and_subscription_safel
     )
 
     assert context.role == PortalRole.VIEWER
+    assert context.organization_id == "stay"
     assert context.subscription_status == SubscriptionStatus.NONE
     assert context.has_active_subscription is False
 

@@ -24,11 +24,7 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-export function MagicLinkSignIn({
-  organizationRequired = false,
-}: {
-  organizationRequired?: boolean;
-}) {
+export function MagicLinkSignIn() {
   const router = useRouter();
   const { setActive } = useClerk();
   const { signIn, fetchStatus } = useSignIn();
@@ -36,14 +32,7 @@ export function MagicLinkSignIn({
   const [submittedEmail, setSubmittedEmail] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [isAwaitingVerification, setIsAwaitingVerification] = useState(false);
-  const [feedback, setFeedback] = useState<{ tone: "success" | "error"; text: string } | null>(
-    organizationRequired
-      ? {
-          tone: "error",
-          text: "Choose your organization after sign-in so the backend can resolve the correct tenant.",
-        }
-      : null,
-  );
+  const [feedback, setFeedback] = useState<{ tone: "success" | "error"; text: string } | null>(null);
 
   useEffect(() => {
     if (!isAwaitingVerification || !signIn?.emailLink.verification?.createdSessionId) {
@@ -74,7 +63,7 @@ export function MagicLinkSignIn({
 
     const normalizedEmail = email.trim().toLowerCase();
     if (!normalizedEmail) {
-      setFeedback({ tone: "error", text: "Enter the invited work email for this organization." });
+      setFeedback({ tone: "error", text: "Enter the invited email for your SVMP portal access." });
       return;
     }
 
@@ -162,8 +151,8 @@ export function MagicLinkSignIn({
       <div className="rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
         <p className="font-semibold text-ink">How this works</p>
         <p className="mt-2">
-          Use the invited email for your organization. The browser never chooses a tenant manually;
-          access is resolved from your authenticated Clerk organization on the backend.
+          Use the invited email for your tenant. The browser never chooses a tenant manually;
+          access is resolved from your MongoDB verified user record on the backend.
         </p>
         {submittedEmail ? (
           <p className="mt-2">
@@ -173,7 +162,7 @@ export function MagicLinkSignIn({
       </div>
 
       <p className="text-sm leading-6 text-ink/62">
-        Need a new invite or a different organization? Continue with{" "}
+        Need a new invite or a different tenant? Continue with{" "}
         <Link href="/signup" className="font-semibold text-ink">
           invitation access
         </Link>

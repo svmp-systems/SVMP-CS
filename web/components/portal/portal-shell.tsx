@@ -1,6 +1,6 @@
 "use client";
 
-import { OrganizationSwitcher, UserButton } from "@clerk/nextjs";
+import { UserButton } from "@clerk/nextjs";
 import clsx from "clsx";
 import {
   BarChart3,
@@ -133,17 +133,8 @@ export function PortalShell({
             </div>
             <div className="flex items-center gap-3">
               {!previewAuth ? (
-                <div className="hidden md:block">
-                  <OrganizationSwitcher
-                    hidePersonal
-                    afterSelectOrganizationUrl="/dashboard"
-                    appearance={{
-                      elements: {
-                        organizationSwitcherTrigger:
-                          "rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold",
-                      },
-                    }}
-                  />
+                <div className="hidden rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold text-ink/68 md:block">
+                  Verified user
                 </div>
               ) : null}
               <Link
@@ -166,16 +157,9 @@ export function PortalShell({
           </div>
           {previewAuth ? null : (
             <div className="flex items-center justify-between gap-3 px-4 pb-4 md:hidden">
-                <OrganizationSwitcher
-                  hidePersonal
-                  afterSelectOrganizationUrl="/dashboard"
-                  appearance={{
-                    elements: {
-                      organizationSwitcherTrigger:
-                        "rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold",
-                    },
-                  }}
-                />
+              <div className="rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold text-ink/68">
+                Verified user
+              </div>
               <Link
                 href="/settings"
                 className="rounded-[8px] border border-line bg-white px-4 py-2 text-sm font-semibold hover:border-ink"

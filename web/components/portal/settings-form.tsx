@@ -1,6 +1,5 @@
 "use client";
 
-import { OrganizationSwitcher } from "@clerk/nextjs";
 import { useState, useTransition } from "react";
 import { Notice } from "@/components/portal/notice";
 import { Panel } from "@/components/portal/panel";
@@ -184,27 +183,18 @@ export function SettingsForm({
           ) : null}
         </Panel>
 
-        <Panel title="Organization access" eyebrow="Clerk organization">
+        <Panel title="Tenant access" eyebrow="Verified user">
           <div className="space-y-4">
             <p className="text-sm leading-6 text-ink/62">
               {previewAuth
                 ? "Preview mode is using built-in access so the portal can be reviewed without Clerk."
-                : "Tenant access is resolved from the authenticated organization. The browser never selects a tenant manually."}
+                : "Clerk verifies identity. MongoDB decides the tenant, role, and permissions for this user."}
             </p>
-            {previewAuth ? null : (
-              <OrganizationSwitcher
-                hidePersonal
-                afterSelectOrganizationUrl="/dashboard"
-                appearance={{
-                  elements: {
-                    organizationSwitcherTrigger:
-                      "rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold",
-                  },
-                }}
-              />
-            )}
             <div className="rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
-              Active org: {me.organizationId}
+              Access scope: {me.organizationId}
+            </div>
+            <div className="rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
+              Role: {me.role}. Tenant: {me.tenantId}.
             </div>
           </div>
         </Panel>

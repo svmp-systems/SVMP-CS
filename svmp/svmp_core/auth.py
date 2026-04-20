@@ -63,7 +63,8 @@ class AuthenticatedUser(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     user_id: str
-    organization_id: str
+    organization_id: str | None = None
+    auth_provider: str = "clerk"
     email: str | None = None
     claims: dict[str, Any] = Field(default_factory=dict)
 
@@ -74,7 +75,7 @@ class TenantContext(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     user_id: str
-    organization_id: str
+    organization_id: str | None = None
     tenant_id: str
     role: PortalRole
     subscription_status: SubscriptionStatus
@@ -144,12 +145,13 @@ def authenticated_user_from_trusted_headers(
 
     normalized_user_id = _non_blank(user_id)
     normalized_organization_id = _non_blank(organization_id)
-    if normalized_user_id is None or normalized_organization_id is None:
+    if normalized_user_id is None:
         raise ValidationError("trusted dashboard auth headers are missing")
 
     return AuthenticatedUser(
         user_id=normalized_user_id,
         organization_id=normalized_organization_id,
+        auth_provider="trusted_headers",
         email=_non_blank(email),
     )
 
@@ -298,15 +300,11 @@ async def authenticated_user_from_clerk_jwt(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Clerk token missing user id",
         )
-    if organization_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Clerk token missing organization context",
-        )
 
     return AuthenticatedUser(
         user_id=user_id,
         organization_id=organization_id,
+        auth_provider="clerk",
         email=_non_blank(claims.get("email"))
         or _non_blank(claims.get("primary_email_address")),
         claims=dict(claims),
@@ -317,7 +315,7 @@ def tenant_context_from_record(
     user: AuthenticatedUser,
     record: Mapping[str, Any],
 ) -> TenantContext:
-    """Build a tenant context from a backend-owned tenant membership record."""
+    """Build a tenant context from a backend-owned verified user record."""
 
     tenant_id = _non_blank(record.get("tenantId"))
     if tenant_id is None:
@@ -333,7 +331,10 @@ def tenant_context_from_record(
 
     return TenantContext(
         user_id=user.user_id,
-        organization_id=user.organization_id,
+        organization_id=user.organization_id
+        or _non_blank(record.get("organizationId"))
+        or _non_blank(record.get("clerkOrganizationId"))
+        or tenant_id,
         email=user.email or _non_blank(record.get("email")),
         tenant_id=tenant_id,
         tenant_name=_non_blank(record.get("tenantName")),
@@ -412,6 +413,9 @@ async def require_tenant_context(
         )
 
     record = await resolver(
+        auth_provider=user.auth_provider,
+        provider_user_id=user.user_id,
+        email=user.email,
         clerk_organization_id=user.organization_id,
         clerk_user_id=user.user_id,
     )

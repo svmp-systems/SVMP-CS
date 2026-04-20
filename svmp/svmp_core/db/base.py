@@ -188,10 +188,13 @@ class TenantRepository(ABC):
     async def resolve_dashboard_tenant_context(
         self,
         *,
-        clerk_organization_id: str,
-        clerk_user_id: str,
+        auth_provider: str = "clerk",
+        provider_user_id: str | None = None,
+        email: str | None = None,
+        clerk_organization_id: str | None = None,
+        clerk_user_id: str | None = None,
     ) -> Mapping[str, Any] | None:
-        """Resolve tenant membership, role, and billing state for dashboard APIs."""
+        """Resolve tenant user access, role, and billing state for dashboard APIs."""
 
         return None
 

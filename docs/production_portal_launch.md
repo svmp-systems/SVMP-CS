@@ -2,7 +2,7 @@
 
 ## Goal
 
-The customer portal should be private by default. A user must sign in through Clerk, belong to the correct Clerk organization, map to one SVMP tenant in MongoDB, and pass backend role/subscription checks before any tenant data is returned.
+The customer portal should be private by default. A user must sign in through Clerk, map to one SVMP tenant through MongoDB `verified_users`, and pass backend role/subscription checks before any tenant data is returned.
 
 ## Frontend Env
 
@@ -18,6 +18,8 @@ NEXT_PUBLIC_CLERK_JWT_TEMPLATE=svmp-dashboard
 NEXT_PUBLIC_CLERK_SIGN_IN_URL=/login
 NEXT_PUBLIC_CLERK_SIGN_UP_URL=/signup
 ```
+
+The Clerk JWT template should include the Clerk user id and email claim. Email is required only when you seed an invite before you know the Clerk user id.
 
 Do not enable preview auth for paid-client production access:
 
@@ -47,22 +49,24 @@ Stripe is not required for pilots. Paid access is manually accepted by setting t
 ## Access Setup
 
 1. Create the tenant document in MongoDB.
-2. Create the Clerk organization.
-3. Invite the user in Clerk.
-4. Copy the Clerk organization id and user id.
-5. Seed the backend membership:
+2. Add or invite the user in Clerk.
+3. Copy the Clerk user id when available.
+4. Seed the backend verified user access:
 
 ```powershell
 & .\.venv\Scripts\python.exe .\scripts\seed_portal_access.py `
   --tenant-id stay `
-  --clerk-organization-id org_... `
-  --clerk-user-id user_... `
+  --provider-user-id user_... `
   --email prnvvh@gmail.com `
   --role owner `
   --subscription-status active
 ```
 
-The browser never sends or chooses `tenantId`. The backend resolves it from `tenant_memberships`.
+The browser never sends or chooses `tenantId`. The backend resolves it from `verified_users`.
+
+You do not need to manually create `verified_users` in MongoDB first. MongoDB creates it on first insert, and the backend also creates indexes for it on startup.
+
+For an email invite before the user has a Clerk id, omit `--provider-user-id`; the script creates an `invited` record. On first login, the backend binds the Clerk user id and marks the record active.
 
 For manual pilots, the same command can mark the tenant active with:
 
