@@ -4,6 +4,7 @@ import { Notice } from "@/components/portal/notice";
 import { MetricCard } from "@/components/portal/metric-card";
 import { PageHeader } from "@/components/portal/page-header";
 import { Panel } from "@/components/portal/panel";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { StatusBadge, statusTone } from "@/components/portal/status-badge";
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
@@ -258,6 +259,6 @@ export default async function DashboardPage() {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }

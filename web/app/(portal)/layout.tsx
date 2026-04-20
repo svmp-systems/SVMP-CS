@@ -1,5 +1,6 @@
 import { getServerApi } from "@/services/api/server";
 import { ApiError } from "@/services/api/shared";
+import { PortalErrorScreen } from "@/components/portal/portal-error-screen";
 import { PortalShell } from "@/components/portal/portal-shell";
 import { redirect } from "next/navigation";
 
@@ -27,6 +28,6 @@ async function renderPortalLayout(children: React.ReactNode) {
     if (error instanceof ApiError && error.status === 402) {
       redirect("/settings?billing=required");
     }
-    throw error;
+    return <PortalErrorScreen error={error} />;
   }
 }
