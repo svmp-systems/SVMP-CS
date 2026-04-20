@@ -11,14 +11,10 @@ import { createBrowserApi, type BrowserApi } from "./shared";
 const clerkJwtTemplate = process.env.CLERK_JWT_TEMPLATE?.trim() || process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE?.trim() || undefined;
 
 async function requireServerToken() {
-  const { userId, orgId, getToken } = await auth();
+  const { userId, getToken } = await auth();
 
   if (!userId) {
     redirect("/login");
-  }
-
-  if (!orgId) {
-    redirect("/login?organization=required");
   }
 
   const token = await getToken(clerkJwtTemplate ? { template: clerkJwtTemplate } : undefined);

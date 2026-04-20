@@ -10,8 +10,8 @@ import { redirect } from "next/navigation";
 
 const checks = [
   "Magic-link sign-in for invited users",
-  "Google SSO can layer in later for team workspaces",
-  "Tenant access resolved by backend session",
+  "Google SSO verifies the user identity",
+  "Tenant access resolved from Mongo verified users",
   "Inactive subscriptions routed to billing only",
 ];
 
@@ -25,10 +25,6 @@ export default async function LoginPage({
   const configurationIssue = authConfigurationIssue();
   const { userId } = clerkConfigured ? await getAuthSafe() : { userId: null };
   const params = await searchParams;
-  const organizationState = params.organization;
-  const organizationRequired =
-    organizationState === "required" ||
-    (Array.isArray(organizationState) && organizationState.includes("required"));
   const requestedNext = params.next;
   const nextPath =
     typeof requestedNext === "string" && requestedNext.startsWith("/") && !requestedNext.startsWith("//")
@@ -52,7 +48,7 @@ export default async function LoginPage({
               Sign in to manage your AI support system.
             </h1>
             <p className="mt-7 text-lg leading-8 text-ink/68">
-              Paid client access is tied to your organization. SVMP CS resolves the tenant on the backend and gates operational pages by subscription state.
+              Paid client access is tied to a verified user record. SVMP CS resolves the tenant on the backend and gates operational pages by subscription state.
             </p>
           </div>
           <div className="grid gap-px overflow-hidden rounded-[8px] border border-line bg-line">
@@ -70,7 +66,7 @@ export default async function LoginPage({
             <h2 className="mt-3 text-2xl font-semibold">Welcome back</h2>
             <p className="mt-3 text-sm leading-6 text-ink/62">
               {clerkConfigured
-                ? "Use your invited account. The backend resolves tenant access from your organization before returning any dashboard data."
+                ? "Use your invited account. The backend checks MongoDB for your tenant, role, and permissions before returning any dashboard data."
                 : previewEnabled
                   ? "Use the temporary built-in portal password. Tenant access is still resolved on the server before dashboard pages render."
                   : "Authentication is locked until the production auth environment is configured."}
@@ -78,14 +74,7 @@ export default async function LoginPage({
 
             <div className="mt-8">
               {clerkConfigured ? (
-                <>
-                  {organizationRequired ? (
-                    <div className="mb-4 rounded-[8px] border border-rose/30 bg-rose/10 p-4 text-sm leading-6 text-rose">
-                      Choose the client organization after sign-in so SVMP CS can resolve the tenant.
-                    </div>
-                  ) : null}
-                  <ClerkSignInPanel />
-                </>
+                <ClerkSignInPanel />
               ) : previewEnabled ? (
                 <PreviewLogin nextPath={nextPath} />
               ) : (

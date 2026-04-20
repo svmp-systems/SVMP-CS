@@ -17,7 +17,7 @@ export default async function SignUpPage() {
         <p className="text-sm font-semibold text-pine">Invitation access</p>
         <h1 className="mt-3 text-2xl font-semibold">Join your SVMP CS workspace</h1>
         <p className="mt-3 text-sm leading-6 text-ink/62">
-          Finish sign-up with the invited work email. Once the account is created, the backend resolves tenant access from your authenticated organization.
+          Finish sign-up with the invited work email. Once the account is created, the backend checks MongoDB for your tenant, role, and permissions.
         </p>
         <div className="mt-8">
           {clerkConfigured ? (

@@ -219,6 +219,11 @@ async def test_connect_initializes_repositories_and_indexes(monkeypatch: pytest.
     assert len(fake_db["knowledge_base"].indexes) == 1
     assert len(fake_db["governance_logs"].indexes) == 1
     assert len(fake_db["tenants"].indexes) == 1
+    assert len(fake_db["verified_users"].indexes) == 3
+    assert len(fake_db["billing_subscriptions"].indexes) == 3
+    assert len(fake_db["integration_status"].indexes) == 1
+    assert len(fake_db["audit_logs"].indexes) == 3
+    assert len(fake_db["provider_events"].indexes) == 2
     assert fake_db["tenants"].indexes[0]["kwargs"] == {
         "unique": True,
         "name": "tenant_id_unique",
@@ -229,6 +234,8 @@ async def test_connect_initializes_repositories_and_indexes(monkeypatch: pytest.
             }
         },
     }
+    assert fake_db["verified_users"].indexes[0]["kwargs"]["name"] == "verified_user_provider_unique"
+    assert fake_db["verified_users"].indexes[0]["kwargs"]["unique"] is True
 
     await database.disconnect()
 

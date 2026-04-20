@@ -229,8 +229,11 @@ class StubTenantRepository(TenantRepository):
     async def resolve_dashboard_tenant_context(
         self,
         *,
-        clerk_organization_id: str,
-        clerk_user_id: str,
+        auth_provider: str = "clerk",
+        provider_user_id: str | None = None,
+        email: str | None = None,
+        clerk_organization_id: str | None = None,
+        clerk_user_id: str | None = None,
     ) -> Mapping[str, Any] | None:
         return deepcopy(self._dashboard_context) if self._dashboard_context else None
 

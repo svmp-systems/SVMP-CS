@@ -24,8 +24,8 @@ Every dashboard request should follow this backend flow:
 
 ```text
 verify user auth
-resolve Clerk organization
-resolve SVMP tenantId for that organization
+verify Clerk user identity
+resolve SVMP tenantId from MongoDB verified_users
 resolve user role
 check subscription status when required
 run tenant-scoped query
@@ -41,7 +41,7 @@ The backend should derive a request context similar to:
 ```json
 {
   "userId": "clerk-user-id",
-  "organizationId": "clerk-org-id",
+  "organizationId": "stay",
   "tenantId": "stay",
   "role": "owner",
   "subscriptionStatus": "active"
@@ -83,7 +83,7 @@ Response includes:
 
 - user id
 - email
-- organization id
+- access scope id
 - tenant id
 - role
 - subscription status

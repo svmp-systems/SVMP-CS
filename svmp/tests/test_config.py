@@ -25,7 +25,7 @@ def test_settings_defaults_load() -> None:
     assert loaded.MONGODB_KB_COLLECTION == "knowledge_base"
     assert loaded.MONGODB_GOVERNANCE_COLLECTION == "governance_logs"
     assert loaded.MONGODB_TENANTS_COLLECTION == "tenants"
-    assert loaded.MONGODB_TENANT_MEMBERSHIPS_COLLECTION == "tenant_memberships"
+    assert loaded.MONGODB_VERIFIED_USERS_COLLECTION == "verified_users"
     assert loaded.MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION == "billing_subscriptions"
     assert loaded.MONGODB_INTEGRATION_STATUS_COLLECTION == "integration_status"
     assert loaded.MONGODB_AUDIT_LOGS_COLLECTION == "audit_logs"

@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     MONGODB_KB_COLLECTION: str = "knowledge_base"
     MONGODB_GOVERNANCE_COLLECTION: str = "governance_logs"
     MONGODB_TENANTS_COLLECTION: str = "tenants"
-    MONGODB_TENANT_MEMBERSHIPS_COLLECTION: str = "tenant_memberships"
+    MONGODB_VERIFIED_USERS_COLLECTION: str = "verified_users"
     MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION: str = "billing_subscriptions"
     MONGODB_INTEGRATION_STATUS_COLLECTION: str = "integration_status"
     MONGODB_AUDIT_LOGS_COLLECTION: str = "audit_logs"

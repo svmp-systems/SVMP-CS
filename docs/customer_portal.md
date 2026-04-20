@@ -21,8 +21,8 @@ The expected user journey is:
 
 1. A business pays for SVMP.
 2. A user signs in.
-3. The user joins or creates the business organization.
-4. The organization maps to one SVMP `tenantId`.
+3. SVMP verifies the user against MongoDB `verified_users`.
+4. The verified user record maps to one SVMP `tenantId`.
 5. SVMP checks that the tenant has an active subscription.
 6. The user configures business profile, brand voice, knowledge base, and WhatsApp.
 7. The user monitors conversations, governance, and metrics.
@@ -73,7 +73,7 @@ The first paid-client MVP includes:
 - Google login
 - email login fallback
 - paid tenant access check
-- organization to tenant mapping
+- verified user to tenant mapping
 - overview dashboard
 - sessions list and detail
 - knowledge base CRUD

@@ -2,17 +2,16 @@
 
 ## Purpose
 
-This document defines how users, organizations, tenants, roles, and subscriptions should work for the SVMP customer portal.
+This document defines how users, tenant access, roles, and subscriptions should work for the SVMP customer portal.
 
-The main goal is tenant isolation. A signed-in user should only see data for the SVMP tenant connected to their authenticated organization.
+The main goal is tenant isolation. A signed-in user should only see data for the SVMP tenant connected to their MongoDB verified user record.
 
 ## Identity Layers
 
-SVMP uses four separate concepts:
+SVMP uses three separate concepts:
 
 ```text
 User             -> a human signing in through Clerk
-Organization     -> the business account in Clerk
 Tenant           -> the SVMP tenantId used in MongoDB
 Subscription     -> manually approved billing state for pilots, payment-provider state later
 ```
@@ -20,7 +19,7 @@ Subscription     -> manually approved billing state for pilots, payment-provider
 The important mapping is:
 
 ```text
-Clerk organization id -> SVMP tenantId
+Clerk user id/email -> verified_users -> SVMP tenantId
 ```
 
 The browser should not choose this mapping.
@@ -41,9 +40,9 @@ The backend verifies Clerk-issued auth on every dashboard API request.
 Every dashboard API request should resolve the tenant in this order:
 
 1. Verify the user auth token.
-2. Read the active Clerk organization from the session.
-3. Look up the SVMP tenant mapped to that organization.
-4. Load the user's membership and role for that tenant.
+2. Read the Clerk user id and verified email.
+3. Look up the user's active or invited `verified_users` record.
+4. Load the tenant, role, and permissions from that record.
 5. Load the tenant subscription status.
 6. Continue only if role and subscription checks pass.
 
@@ -149,19 +148,20 @@ Payment gateway rules for Stripe/Razorpay can be re-enabled later:
 
 ## Mongo Collections
 
-### `tenant_memberships`
+### `verified_users`
 
-Purpose: connect Clerk users and organizations to SVMP tenants and roles.
+Purpose: connect authenticated users to SVMP tenants and roles.
 
 Shape:
 
 ```json
 {
   "tenantId": "stay",
-  "clerkOrganizationId": "org_123",
-  "clerkUserId": "user_123",
+  "authProvider": "clerk",
+  "providerUserId": "user_123",
   "email": "owner@stayparfums.com",
   "role": "owner",
+  "permissions": ["read", "write", "admin"],
   "status": "active",
   "createdAt": "ISODate",
   "updatedAt": "ISODate"
@@ -170,7 +170,8 @@ Shape:
 
 Indexes:
 
-- unique `clerkOrganizationId`, `clerkUserId`
+- unique `authProvider`, `providerUserId`
+- `email`, `status`
 - `tenantId`, `role`
 
 ### `billing_subscriptions`
@@ -290,7 +291,6 @@ The `tenants` document should eventually include:
     "autoAnswerEnabled": true
   },
   "billing": {
-    "status": "active",
     "status": "active"
   },
   "onboarding": {

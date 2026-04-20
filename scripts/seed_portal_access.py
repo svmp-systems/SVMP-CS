@@ -1,4 +1,4 @@
-"""Seed dashboard tenant access for a Clerk user and organization."""
+"""Seed dashboard tenant access for an authenticated portal user."""
 
 from __future__ import annotations
 
@@ -24,14 +24,19 @@ ACTIVE_STATUSES = {"trialing", "active"}
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Map one Clerk user/org pair to an SVMP tenant for dashboard access.",
-    )
+    parser = argparse.ArgumentParser(description="Map one authenticated user to an SVMP tenant for dashboard access.")
     parser.add_argument("--tenant-id", required=True, help="SVMP tenantId, for example stay.")
-    parser.add_argument("--clerk-organization-id", required=True, help="Clerk organization id, for example org_...")
-    parser.add_argument("--clerk-user-id", required=True, help="Clerk user id, for example user_...")
+    parser.add_argument("--auth-provider", default="clerk", help="Login provider, for example clerk.")
+    parser.add_argument("--provider-user-id", default=None, help="Auth provider user id, for example Clerk user_...")
+    parser.add_argument("--clerk-user-id", dest="provider_user_id", help="Alias for --provider-user-id.")
     parser.add_argument("--email", required=True, help="User email for audit/display context.")
     parser.add_argument("--role", default="owner", choices=sorted(ALLOWED_ROLES), help="Dashboard role.")
+    parser.add_argument(
+        "--status",
+        choices=["active", "invited", "suspended", "removed"],
+        default=None,
+        help="Access status. Defaults to active when provider user id is present, otherwise invited.",
+    )
     parser.add_argument(
         "--subscription-status",
         default=None,
@@ -47,28 +52,30 @@ async def seed_portal_access(args: argparse.Namespace, *, settings: Settings | N
 
     try:
         database = client[runtime_settings.MONGODB_DB_NAME]
-        memberships = database[runtime_settings.MONGODB_TENANT_MEMBERSHIPS_COLLECTION]
+        verified_users = database[runtime_settings.MONGODB_VERIFIED_USERS_COLLECTION]
         tenants = database[runtime_settings.MONGODB_TENANTS_COLLECTION]
         billing = database[runtime_settings.MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION]
 
+        provider_user_id = args.provider_user_id.strip() if args.provider_user_id else None
+        status = args.status or ("active" if provider_user_id else "invited")
         membership_payload = {
             "tenantId": args.tenant_id,
-            "clerkOrganizationId": args.clerk_organization_id,
-            "clerkUserId": args.clerk_user_id,
+            "authProvider": args.auth_provider.strip().lower(),
+            "providerUserId": provider_user_id,
             "email": args.email.strip().lower(),
             "role": args.role,
-            "status": "active",
+            "permissions": _permissions_for_role(args.role),
+            "status": status,
             "updatedAt": now,
         }
-        await memberships.update_one(
-            {
-                "clerkOrganizationId": args.clerk_organization_id,
-                "clerkUserId": args.clerk_user_id,
-            },
-            {
-                "$set": membership_payload,
-                "$setOnInsert": {"createdAt": now},
-            },
+        query = (
+            {"authProvider": membership_payload["authProvider"], "providerUserId": provider_user_id}
+            if provider_user_id
+            else {"email": membership_payload["email"], "tenantId": args.tenant_id}
+        )
+        await verified_users.update_one(
+            query,
+            {"$set": membership_payload, "$setOnInsert": {"createdAt": now}},
             upsert=True,
         )
 
@@ -96,9 +103,10 @@ async def seed_portal_access(args: argparse.Namespace, *, settings: Settings | N
 
         return {
             "tenantId": args.tenant_id,
-            "clerkOrganizationId": args.clerk_organization_id,
-            "clerkUserId": args.clerk_user_id,
+            "authProvider": membership_payload["authProvider"],
+            "providerUserId": provider_user_id or "",
             "role": args.role,
+            "status": status,
             "subscriptionStatus": args.subscription_status or "unchanged",
         }
     finally:
@@ -115,12 +123,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(
         "Seeded portal access: "
         f"tenant={result['tenantId']} "
-        f"org={result['clerkOrganizationId']} "
-        f"user={result['clerkUserId']} "
+        f"provider={result['authProvider']} "
+        f"user={result['providerUserId'] or 'pending-email-invite'} "
         f"role={result['role']} "
+        f"status={result['status']} "
         f"subscription={result['subscriptionStatus']}"
     )
     return 0
+
+
+def _permissions_for_role(role: str) -> list[str]:
+    permissions_by_role = {
+        "owner": ["read", "write", "admin", "team.manage", "billing.manage"],
+        "admin": ["read", "write", "team.manage"],
+        "analyst": ["read"],
+        "viewer": ["read"],
+    }
+    return permissions_by_role.get(role, ["read"])
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI entrypoint

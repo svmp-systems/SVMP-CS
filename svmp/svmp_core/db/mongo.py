@@ -486,12 +486,12 @@ class MongoTenantRepository(TenantRepository):
         self,
         collection,
         *,
-        memberships_collection=None,
+        verified_users_collection=None,
         billing_subscriptions_collection=None,
         integration_status_collection=None,
     ) -> None:
         self._collection = collection
-        self._memberships_collection = memberships_collection
+        self._verified_users_collection = verified_users_collection
         self._billing_subscriptions_collection = billing_subscriptions_collection
         self._integration_status_collection = integration_status_collection
 
@@ -585,24 +585,67 @@ class MongoTenantRepository(TenantRepository):
     async def resolve_dashboard_tenant_context(
         self,
         *,
-        clerk_organization_id: str,
-        clerk_user_id: str,
+        auth_provider: str = "clerk",
+        provider_user_id: str | None = None,
+        email: str | None = None,
+        clerk_organization_id: str | None = None,
+        clerk_user_id: str | None = None,
     ) -> Mapping[str, Any] | None:
-        if self._memberships_collection is None:
+        if self._verified_users_collection is None:
             return None
 
-        organization_id = clerk_organization_id.strip()
-        user_id = clerk_user_id.strip()
-        if not organization_id or not user_id:
-            return None
-
-        membership = await self._memberships_collection.find_one(
-            {
-                "clerkOrganizationId": organization_id,
-                "clerkUserId": user_id,
-                "status": "active",
-            }
+        provider = auth_provider.strip().lower() if isinstance(auth_provider, str) else "clerk"
+        user_id = (
+            provider_user_id
+            if isinstance(provider_user_id, str) and provider_user_id.strip()
+            else clerk_user_id
         )
+        normalized_user_id = user_id.strip() if isinstance(user_id, str) else ""
+        normalized_email = email.strip().lower() if isinstance(email, str) and email.strip() else ""
+        if not normalized_user_id and not normalized_email:
+            return None
+
+        membership = None
+        if normalized_user_id:
+            membership = await self._verified_users_collection.find_one(
+                {
+                    "authProvider": provider,
+                    "providerUserId": normalized_user_id,
+                    "status": "active",
+                }
+            )
+            if not isinstance(membership, Mapping):
+                membership = await self._verified_users_collection.find_one(
+                    {
+                        "clerkUserId": normalized_user_id,
+                        "status": "active",
+                    }
+                )
+
+        if not isinstance(membership, Mapping) and normalized_email:
+            membership = await self._verified_users_collection.find_one(
+                {
+                    "email": normalized_email,
+                    "status": {"$in": ["active", "invited"]},
+                },
+                sort=[("status", ASCENDING), ("updatedAt", DESCENDING)],
+            )
+
+            if isinstance(membership, Mapping) and normalized_user_id and not membership.get("providerUserId"):
+                membership = await self._verified_users_collection.find_one_and_update(
+                    {"_id": membership["_id"]},
+                    {
+                        "$set": {
+                            "authProvider": provider,
+                            "providerUserId": normalized_user_id,
+                            "status": "active",
+                            "acceptedAt": datetime.now(timezone.utc),
+                            "updatedAt": datetime.now(timezone.utc),
+                        }
+                    },
+                    return_document=ReturnDocument.AFTER,
+                )
+
         if not isinstance(membership, Mapping):
             return None
 
@@ -639,6 +682,8 @@ class MongoTenantRepository(TenantRepository):
             "tenantName": tenant_name,
             "role": membership.get("role", "viewer"),
             "email": membership.get("email"),
+            "organizationId": membership.get("organizationId") or normalized_tenant_id,
+            "permissions": membership.get("permissions", []),
             "subscriptionStatus": subscription_status or "none",
             "billing": dict(tenant_billing),
         }
@@ -766,8 +811,8 @@ class MongoDatabase(Database):
             )
             self._tenants_repo = MongoTenantRepository(
                 self._db[self._settings.MONGODB_TENANTS_COLLECTION],
-                memberships_collection=self._db[
-                    self._settings.MONGODB_TENANT_MEMBERSHIPS_COLLECTION
+                verified_users_collection=self._db[
+                    self._settings.MONGODB_VERIFIED_USERS_COLLECTION
                 ],
                 billing_subscriptions_collection=self._db[
                     self._settings.MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION
@@ -846,19 +891,23 @@ class MongoDatabase(Database):
             },
         )
 
-        memberships_collection = self._db[self._settings.MONGODB_TENANT_MEMBERSHIPS_COLLECTION]
-        await memberships_collection.create_index(
-            [("clerkOrganizationId", ASCENDING), ("clerkUserId", ASCENDING)],
+        verified_users_collection = self._db[self._settings.MONGODB_VERIFIED_USERS_COLLECTION]
+        await verified_users_collection.create_index(
+            [("authProvider", ASCENDING), ("providerUserId", ASCENDING)],
             unique=True,
-            name="membership_clerk_org_user_unique",
+            name="verified_user_provider_unique",
             partialFilterExpression={
-                "clerkOrganizationId": {"$exists": True, "$type": "string"},
-                "clerkUserId": {"$exists": True, "$type": "string"},
+                "authProvider": {"$exists": True, "$type": "string"},
+                "providerUserId": {"$exists": True, "$type": "string"},
             },
         )
-        await memberships_collection.create_index(
+        await verified_users_collection.create_index(
+            [("email", ASCENDING), ("status", ASCENDING)],
+            name="verified_user_email_status",
+        )
+        await verified_users_collection.create_index(
             [("tenantId", ASCENDING), ("role", ASCENDING)],
-            name="membership_tenant_role",
+            name="verified_user_tenant_role",
         )
 
         billing_collection = self._db[self._settings.MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION]
