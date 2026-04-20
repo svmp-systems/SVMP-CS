@@ -24,7 +24,11 @@ function errorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-export function MagicLinkSignIn() {
+export function MagicLinkSignIn({
+  organizationRequired = false,
+}: {
+  organizationRequired?: boolean;
+}) {
   const router = useRouter();
   const { setActive } = useClerk();
   const { signIn, fetchStatus } = useSignIn();
@@ -168,6 +172,11 @@ export function MagicLinkSignIn() {
         </Link>
         .
       </p>
+      {organizationRequired ? (
+        <p className="text-sm leading-6 text-berry">
+          The invite needs to place this user into the correct organization before portal access can finish.
+        </p>
+      ) : null}
     </div>
   );
 }
