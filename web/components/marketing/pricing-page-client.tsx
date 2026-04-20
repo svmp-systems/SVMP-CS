@@ -230,7 +230,7 @@ export function PricingPageClient() {
                         setFormState((current) => ({ ...current, name: event.target.value }))
                       }
                       className="rounded-[8px] border border-line bg-white px-4 py-3 text-[15px] outline-none transition focus:border-ink"
-                      placeholder="Samarth"
+                      placeholder="Name"
                     />
                   </label>
                   <label className="grid gap-2 text-[15px] font-medium">
