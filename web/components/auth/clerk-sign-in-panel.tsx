@@ -5,8 +5,7 @@ import { SignIn } from "@clerk/nextjs";
 export function ClerkSignInPanel() {
   return (
     <SignIn
-      path="/login"
-      routing="path"
+      routing="hash"
       forceRedirectUrl="/dashboard"
       signUpUrl="/signup"
       appearance={{

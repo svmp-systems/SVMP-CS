@@ -22,8 +22,7 @@ export default async function SignUpPage() {
         <div className="mt-8">
           {clerkConfigured ? (
             <SignUp
-              path="/signup"
-              routing="path"
+              routing="hash"
               forceRedirectUrl="/dashboard"
               signInUrl="/login"
               appearance={{
