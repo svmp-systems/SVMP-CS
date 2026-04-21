@@ -25,6 +25,7 @@ export default async function LoginPage({
   const { userId } = clerkConfigured ? await getAuthSafe() : { userId: null };
   const params = await searchParams;
   const requestedNext = params.next;
+  const backendUnavailable = params.backend === "unavailable";
   const nextPath =
     typeof requestedNext === "string" && requestedNext.startsWith("/") && !requestedNext.startsWith("//")
       ? requestedNext
@@ -66,6 +67,12 @@ export default async function LoginPage({
                   ? "Use the temporary built-in portal password. Tenant access is still resolved on the server before dashboard pages render."
                   : "Authentication is locked until the production auth environment is configured."}
             </p>
+
+            {backendUnavailable ? (
+              <div className="mt-4 rounded-[8px] border border-[#AA8A24]/20 bg-[#F8E7A6] p-4 text-sm leading-6 text-[#6D5613]">
+                The dashboard is temporarily unavailable, so sign in starts here until the backend connection is restored.
+              </div>
+            ) : null}
 
             <div className="mt-8">
               {clerkConfigured ? (
