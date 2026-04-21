@@ -1,4 +1,4 @@
-import { ClerkSignInPanel } from "@/components/auth/clerk-sign-in-panel";
+import { MagicLinkSignIn } from "@/components/auth/magic-link-sign-in";
 import { PreviewLogin } from "@/components/auth/preview-login";
 import { getAuthSafe } from "@/lib/clerk-auth";
 import {
@@ -9,8 +9,8 @@ import {
 
 const checks = [
   "Magic-link sign-in for invited users",
-  "Google SSO verifies the user identity",
-  "Tenant access resolved from Mongo verified users",
+  "Email fallback for invited users",
+  "Tenant access resolved by backend session",
   "Inactive subscriptions routed to billing only",
 ];
 
@@ -62,7 +62,7 @@ export default async function LoginPage({
             <h2 className="mt-3 text-2xl font-semibold">Welcome back</h2>
             <p className="mt-3 text-sm leading-6 text-ink/62">
               {clerkConfigured
-                ? "Use Google or your invited email. The backend checks MongoDB for your tenant, role, and permissions before returning any dashboard data."
+                ? "Use your invited work email and SVMP CS will send a secure sign-in link for this browser."
                 : previewEnabled
                   ? "Use the temporary built-in portal password. Tenant access is still resolved on the server before dashboard pages render."
                   : "Authentication is locked until the production auth environment is configured."}
@@ -76,7 +76,7 @@ export default async function LoginPage({
 
             <div className="mt-8">
               {clerkConfigured ? (
-                <ClerkSignInPanel />
+                <MagicLinkSignIn />
               ) : previewEnabled ? (
                 <PreviewLogin nextPath={nextPath} />
               ) : (
