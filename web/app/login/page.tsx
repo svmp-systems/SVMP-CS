@@ -6,7 +6,6 @@ import {
   isClerkConfigured,
   isUnsafePreviewAuthEnabled,
 } from "@/lib/clerk-env";
-import { redirect } from "next/navigation";
 
 const checks = [
   "Magic-link sign-in for invited users",
@@ -30,10 +29,6 @@ export default async function LoginPage({
     typeof requestedNext === "string" && requestedNext.startsWith("/") && !requestedNext.startsWith("//")
       ? requestedNext
       : "/dashboard";
-
-  if (userId) {
-    redirect("/dashboard");
-  }
 
   return (
     <main className="min-h-screen bg-paper text-ink">
