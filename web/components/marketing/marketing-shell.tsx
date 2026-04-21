@@ -16,7 +16,7 @@ export function MarketingHeader() {
           ))}
         </div>
         <Link
-          href="/login"
+          href="/signin"
           prefetch={false}
           className="rounded-[8px] bg-ink px-4 py-2 text-[15px] font-medium text-paper hover:bg-pine"
         >
@@ -44,7 +44,7 @@ export function MarketingFooter() {
               {item.label}
             </Link>
           ))}
-          <Link href="/login" prefetch={false} className="hover:text-ink">
+          <Link href="/signin" prefetch={false} className="hover:text-ink">
             Login
           </Link>
         </div>
