@@ -15,7 +15,7 @@ function apiErrorCopy(error: unknown) {
     if (error.status === 403) {
       return {
         title: "Portal access is not ready",
-        copy: "Your login worked, but MongoDB does not have an active verified_users record for this account yet. Add this user to verified_users with the correct tenant and role.",
+        copy: "Your login worked, but the backend could not find an active tenant membership for this Supabase account yet. Add or activate the matching membership record before retrying.",
         action: "Back to login",
         href: "/login",
       };
@@ -24,7 +24,7 @@ function apiErrorCopy(error: unknown) {
     if (error.status === 402) {
       return {
         title: "Manual approval required",
-        copy: "This tenant exists, but its subscription status is not active or trialing yet. Mark the tenant as paid in MongoDB to unlock operational pages.",
+        copy: "This tenant exists, but its subscription status is not active or trialing yet. Update the tenant billing state in Supabase to unlock operational pages.",
         action: "Open settings",
         href: "/settings?billing=required",
       };

@@ -7,7 +7,7 @@ import {
   PREVIEW_SESSION_COOKIE,
   previewSessionMaxAgeSeconds,
 } from "@/lib/preview-auth";
-import { isPreviewAuthMode } from "@/lib/clerk-env";
+import { isPreviewAuthMode } from "@/lib/portal-auth-env";
 
 function cleanRedirect(value: unknown) {
   if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {

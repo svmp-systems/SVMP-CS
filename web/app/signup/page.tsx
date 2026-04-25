@@ -1,14 +1,17 @@
-import { SignUp } from "@clerk/nextjs";
-import { getAuthSafe } from "@/lib/clerk-auth";
-import { isClerkConfigured } from "@/lib/clerk-env";
+import { SupabaseAuthPanel } from "@/components/auth/supabase-auth-panel";
+import { isSupabaseConfigured } from "@/lib/portal-auth-env";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
 export default async function SignUpPage() {
-  const { userId } = await getAuthSafe();
-  const clerkConfigured = isClerkConfigured();
+  const supabaseConfigured = isSupabaseConfigured();
 
-  if (userId) {
-    redirect("/dashboard");
+  if (supabaseConfigured) {
+    const supabase = await createServerSupabaseClient();
+    const { data } = await supabase.auth.getClaims();
+    if (data?.claims?.sub) {
+      redirect("/dashboard");
+    }
   }
 
   return (
@@ -17,31 +20,15 @@ export default async function SignUpPage() {
         <p className="text-sm font-semibold text-pine">Invitation access</p>
         <h1 className="mt-3 text-2xl font-semibold">Join your SVMP CS workspace</h1>
         <p className="mt-3 text-sm leading-6 text-ink/62">
-          Finish sign-up with the invited work email. Once the account is created, the backend checks MongoDB for your tenant, role, and permissions.
+          Finish sign-up with the invited work email. Supabase creates the session, and the backend only grants
+          dashboard access if that user has an active tenant membership.
         </p>
         <div className="mt-8">
-          {clerkConfigured ? (
-            <SignUp
-              routing="hash"
-              forceRedirectUrl="/dashboard"
-              signInUrl="/login"
-              appearance={{
-                elements: {
-                  rootBox: "w-full",
-                  card: "shadow-none border-0 p-0",
-                  header: "hidden",
-                  formButtonPrimary:
-                    "rounded-[8px] bg-ink px-4 py-3 text-sm font-semibold text-paper hover:bg-pine",
-                  socialButtonsBlockButton:
-                    "rounded-[8px] border border-line px-4 py-3 text-sm font-semibold hover:border-ink",
-                  formFieldInput:
-                    "h-12 rounded-[8px] border border-line bg-paper px-3 text-sm outline-none focus:border-pine",
-                },
-              }}
-            />
+          {supabaseConfigured ? (
+            <SupabaseAuthPanel mode="signup" />
           ) : (
             <div className="rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
-              Invitation sign-up is unavailable until Clerk is configured in the live environment.
+              Invitation sign-up is unavailable until Supabase is configured in the live environment.
             </div>
           )}
         </div>

@@ -9,7 +9,7 @@ import {
   sanitizeTenantName,
   sanitizeWebsiteUrl,
 } from "@/lib/tenant-display";
-import { isPreviewAuthMode } from "@/lib/clerk-env";
+import { isPreviewAuthMode } from "@/lib/portal-auth-env";
 import { useBrowserApi } from "@/services/api/browser";
 import { ApiError } from "@/services/api/shared";
 import type { MeResponse, TenantResponse } from "@/services/api/types";
@@ -183,12 +183,12 @@ export function SettingsForm({
           ) : null}
         </Panel>
 
-        <Panel title="Tenant access" eyebrow="Verified user">
+        <Panel title="Tenant access" eyebrow="Portal session">
           <div className="space-y-4">
             <p className="text-sm leading-6 text-ink/62">
               {previewAuth
-                ? "Preview mode is using built-in access so the portal can be reviewed without Clerk."
-                : "Clerk verifies identity. MongoDB decides the tenant, role, and permissions for this user."}
+                ? "Preview mode is using built-in access so the portal can be reviewed without Supabase."
+                : "Supabase verifies identity. The backend resolves the tenant membership, role, and permissions for this user."}
             </p>
             <div className="rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
               Access scope: {me.organizationId}
@@ -235,7 +235,7 @@ export function SettingsForm({
           ) : (
             <div className="mt-4 rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
               Pilot billing is handled manually. After payment is accepted, set this tenant's subscription status to
-              active or trialing in MongoDB.
+              active or trialing in Supabase-backed billing state.
             </div>
           )}
         </Panel>

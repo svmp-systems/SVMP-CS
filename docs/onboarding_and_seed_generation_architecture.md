@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document describes the tenant onboarding pipeline that turns a tenant website and brand voice into an initial Mongo knowledge base.
+This document describes the tenant onboarding pipeline that turns a tenant website and brand voice into an initial Supabase/Postgres knowledge base slice.
 
 It is designed for:
 
@@ -11,7 +11,7 @@ It is designed for:
 - website scraping
 - optional public-question enrichment
 - LLM-based FAQ seed generation
-- automatic Mongo KB seeding
+- automatic Postgres KB seeding
 
 ## Current Entry Points
 
@@ -32,7 +32,7 @@ Request shape:
 Immediate behavior:
 
 - upserts the tenant document with `websiteUrl`, `brandVoice`, and onboarding status `queued`
-- launches a background onboarding task
+- launches an in-process background onboarding task inside the FastAPI runtime
 - returns `202 Accepted`
 
 ### `GET /tenants/{tenantId}/onboarding-status`
@@ -53,14 +53,14 @@ Returns:
 flowchart TD
     A["Website Onboarding Form"] --> B["POST /tenants/onboarding"]
     B --> C["tenant doc status = queued"]
-    B --> D["Background task"]
+    B --> D["Background task in FastAPI worker"]
     D --> E["Scrape same-origin website pages"]
     D --> F["Fetch explicit public-question URLs"]
     E --> G["LLM source brief"]
     F --> G
     G --> H["LLM FAQ seed generation"]
     H --> I["Merge shared filler FAQs"]
-    I --> J["Replace tenant/general KB slice in Mongo"]
+    I --> J["Replace tenant/general KB slice in Postgres"]
     J --> K["tenant doc status = completed"]
     D --> L["tenant doc status = failed"]
 ```
@@ -69,22 +69,22 @@ flowchart TD
 
 ### Runtime
 
-- [onboarding.py](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/svmp-core/svmp_core/routes/onboarding.py)
+- `svmp/svmp_core/routes/onboarding.py`
   HTTP route surface
-- [onboarding.py](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/svmp-core/svmp_core/core/onboarding.py)
+- `svmp/svmp_core/core/onboarding.py`
   scraping, prompt-building, FAQ generation, and persistence orchestration
-- [onboarding.py](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/svmp-core/svmp_core/models/onboarding.py)
+- `svmp/svmp_core/models/onboarding.py`
   onboarding request/response models
-- [mongo.py](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/svmp-core/svmp_core/db/mongo.py)
+- `svmp/svmp_core/db/supabase.py`
   tenant upsert and KB replace persistence methods
 
 ### Supporting config/data
 
-- [config.py](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/svmp-core/svmp_core/config.py)
+- `svmp/svmp_core/config.py`
   onboarding scrape and generation settings
-- [sample_tenant.json](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/scripts/demo_data/sample_tenant.json)
+- `scripts/demo_data/sample_tenant.json`
   example tenant with `brandVoice`
-- [seed_tenant.py](C:/Users/pranav%20h/Documents/GitHub/SVMP-CS/scripts/seed_tenant.py)
+- `scripts/seed_tenant.py`
   tenant seed format now accepts `brandVoice`
 
 ## Tenant Document Fields
@@ -197,7 +197,7 @@ Purpose:
 
 ## Knowledge Base Seeding Strategy
 
-Generated FAQs are converted into `KnowledgeEntry` models and written into Mongo.
+Generated FAQs are converted into `KnowledgeEntry` models and written into Postgres through the Supabase database adapter.
 
 Current behavior:
 
@@ -222,16 +222,17 @@ That makes onboarding useful immediately even before future improvements to scra
 
 ## Current Limitations
 
-- onboarding runs in an in-process background task, not a persistent queue
+- onboarding still runs in an in-process background task, not a durable worker queue
 - generated FAQs are written only to the `general` domain
 - public-question enrichment requires explicit URLs
 - there is no deduplicated source-store collection yet
 - there is no human review gate before KB publish
-- there is no embedding/index refresh stage beyond the existing Mongo FAQ write
+- there is no dedicated provenance table for individual generated answers
+- there is no job recovery mechanism if a Vercel function is terminated mid-onboarding
 
 ## Recommended Next Steps
 
-1. Add a persistent onboarding job collection so work survives restarts.
+1. Move onboarding execution into a durable worker path before using it for production-scale customer onboarding.
 2. Add automatic domain synthesis instead of writing everything into `general`.
 3. Add source provenance storage per FAQ.
 4. Add external source discovery adapters for Reddit, Quora, and search-backed discovery where legally and operationally appropriate.

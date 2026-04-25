@@ -1,4 +1,4 @@
-"""Integration-style tests for the demo knowledge-base seed script."""
+"""Integration-style tests for the Supabase knowledge-base seed script."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ def test_seed_transform_applies_top_level_tenant_to_all_entries(tmp_path: Path) 
     seed_file = tmp_path / "seed.json"
     seed_file.write_text(
         (
-            '{'
+            "{"
             '"tenantId": "Stay",'
             '"entries": ['
             '{"domainId": "sales", "question": "Pricing?", "answer": "Contact sales.", "tags": ["sales"]}'
@@ -75,14 +75,14 @@ def test_seed_transform_applies_top_level_tenant_to_all_entries(tmp_path: Path) 
 
 
 @pytest.mark.asyncio
-async def test_seed_entries_from_file_uses_writer_upsert_path(tmp_path: Path) -> None:
+async def test_seed_entries_from_file_uses_writer_replace_path(tmp_path: Path) -> None:
     """The seed script should pass parsed entries into the writer abstraction."""
 
     module = _load_seed_module()
     seed_file = tmp_path / "seed.json"
     seed_file.write_text(
         (
-            '{'
+            "{"
             '"tenantId": "Stay",'
             '"entries": ['
             '{"_id": "faq-1", "domainId": "general", "question": "What do you do?", "answer": "We help customers."}'
@@ -95,7 +95,7 @@ async def test_seed_entries_from_file_uses_writer_upsert_path(tmp_path: Path) ->
         def __init__(self) -> None:
             self.entries = None
 
-        async def upsert_entries(self, entries):
+        async def replace_entries(self, entries):
             self.entries = list(entries)
             return len(self.entries)
 
@@ -110,43 +110,53 @@ async def test_seed_entries_from_file_uses_writer_upsert_path(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
-async def test_mongo_writer_clears_seeded_domain_before_reinserting() -> None:
-    """The Mongo writer should replace a tenant/domain slice, not append to it."""
+async def test_supabase_writer_replaces_each_tenant_domain_slice() -> None:
+    """The Supabase writer should replace one slice per tenant/domain pair."""
 
     module = _load_seed_module()
 
-    class FakeCollection:
+    class FakeKnowledgeRepository:
         def __init__(self) -> None:
-            self.deleted_filters: list[dict] = []
-            self.replaced: list[tuple[dict, dict, bool]] = []
+            self.calls: list[tuple[str, str, list[str]]] = []
 
-        async def delete_many(self, query: dict) -> None:
-            self.deleted_filters.append(dict(query))
+        async def replace_entries_for_tenant_domain(self, tenant_id, domain_id, entries):
+            self.calls.append((tenant_id, domain_id, [entry.id for entry in entries]))
+            return len(entries)
 
-        async def replace_one(self, filter_doc: dict, payload: dict, upsert: bool) -> None:
-            self.replaced.append((dict(filter_doc), dict(payload), upsert))
+    class FakeDatabase:
+        def __init__(self) -> None:
+            self.knowledge_base = FakeKnowledgeRepository()
 
-    collection = FakeCollection()
-    writer = module.MongoKnowledgeSeedWriter(collection)
+    database = FakeDatabase()
+    writer = module.SupabaseKnowledgeSeedWriter(database)
     entries = [
         module.KnowledgeEntry(
             _id="faq-1",
-            tenantId="Niyomilan",
+            tenantId="Stay",
             domainId="general",
             question="What do you do?",
             answer="We help customers.",
         ),
         module.KnowledgeEntry(
             _id="faq-2",
-            tenantId="Niyomilan",
+            tenantId="Stay",
             domainId="general",
-            question="How does support work?",
-            answer="We automate tier-1 support.",
+            question="How do you ship?",
+            answer="We ship nationwide.",
+        ),
+        module.KnowledgeEntry(
+            _id="faq-3",
+            tenantId="Stay",
+            domainId="returns",
+            question="Do you accept returns?",
+            answer="Please review the returns policy.",
         ),
     ]
 
-    written = await writer.upsert_entries(entries)
+    written = await writer.replace_entries(entries)
 
-    assert written == 2
-    assert collection.deleted_filters == [{"tenantId": "Niyomilan", "domainId": "general"}]
-    assert len(collection.replaced) == 2
+    assert written == 3
+    assert database.knowledge_base.calls == [
+        ("Stay", "general", ["faq-1", "faq-2"]),
+        ("Stay", "returns", ["faq-3"]),
+    ]

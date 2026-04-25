@@ -1,4 +1,4 @@
-"""End-to-end smoke test for the current demoable SVMP flow."""
+"""End-to-end smoke test for the current Supabase/Vercel-shaped SVMP flow."""
 
 from __future__ import annotations
 
@@ -19,8 +19,7 @@ from svmp_core.db.base import (
     TenantRepository,
 )
 from svmp_core.main import create_app
-from svmp_core.models import GovernanceDecision, GovernanceLog, KnowledgeEntry, SessionState
-from svmp_core.workflows import run_workflow_b
+from svmp_core.models import GovernanceDecision, GovernanceLog, KnowledgeEntry, OutboundSendResult, SessionState
 
 
 class DemoSessionStateRepository(SessionStateRepository):
@@ -143,7 +142,7 @@ class DemoDatabase(Database):
         self._knowledge_base = DemoKnowledgeRepository(
             [
                 KnowledgeEntry(
-                    _id="faq-1",
+                    id="faq-1",
                     tenantId="Niyomilan",
                     domainId="general",
                     question="What do you do?",
@@ -194,66 +193,58 @@ class DemoDatabase(Database):
         self.disconnected = True
 
 
-class SchedulerStub:
-    """Lightweight scheduler stub for app startup in the smoke test."""
-
-    def __init__(self) -> None:
-        self.jobs: dict[str, dict[str, Any]] = {}
-        self.running = False
-
-    def add_job(self, func, trigger: str, id: str, replace_existing: bool, kwargs: dict[str, Any], **schedule):
-        self.jobs[id] = {
-            "func": func,
-            "trigger": trigger,
-            "replace_existing": replace_existing,
-            "kwargs": kwargs,
-            "schedule": schedule,
-        }
-
-    def get_job(self, job_id: str):
-        return self.jobs.get(job_id)
-
-    def start(self) -> None:
-        self.running = True
-
-    def shutdown(self, wait: bool = False) -> None:
-        self.running = False
-
-
 def _settings() -> Settings:
     """Return deterministic runtime settings for the smoke test."""
 
     return Settings(
         _env_file=None,
         APP_NAME="SVMP-Smoke",
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
         WHATSAPP_PROVIDER="normalized",
-        WHATSAPP_TOKEN="test-whatsapp-token",
-        WHATSAPP_PHONE_NUMBER_ID="1234567890",
-        WHATSAPP_VERIFY_TOKEN="verify-me",
         ALLOW_NORMALIZED_WEBHOOKS=True,
         DEBOUNCE_MS=0,
         SIMILARITY_THRESHOLD=0.75,
-        WORKFLOW_B_INTERVAL_SECONDS=1,
+        WORKFLOW_B_MAX_BATCH_SIZE=25,
         WORKFLOW_C_INTERVAL_HOURS=24,
     )
 
 
-@pytest.mark.asyncio
-async def test_demo_smoke_ingest_then_process_writes_governance_log(
+def test_demo_smoke_ingest_then_inline_process_writes_governance_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """One inbound webhook should flow through session ingest and processing."""
+    """One inbound webhook should flow through session ingest and inline processing."""
 
     async def fake_generate_completion(**kwargs) -> str:
         return '{"bestIndex": 0, "similarityScore": 0.92, "reason": "candidate 0 directly answers the query"}'
 
+    async def fake_send_answer_reply(*args, **kwargs) -> OutboundSendResult:
+        return OutboundSendResult(
+            provider="normalized",
+            accepted=True,
+            status="accepted",
+            externalMessageId="msg-123",
+        )
+
+    async def fake_send_typing_indicator_safely(*args, **kwargs) -> dict[str, Any]:
+        return {
+            "typingIndicatorAttempted": False,
+            "typingIndicatorProvider": "normalized",
+            "typingIndicatorMessageId": None,
+            "typingIndicatorSent": False,
+            "typingIndicatorStatus": "skipped",
+            "typingIndicatorError": None,
+        }
+
     monkeypatch.setattr("svmp_core.workflows.workflow_b.generate_completion", fake_generate_completion)
+    monkeypatch.setattr("svmp_core.workflows.workflow_b._send_answer_reply", fake_send_answer_reply)
+    monkeypatch.setattr(
+        "svmp_core.workflows.workflow_b._send_typing_indicator_safely",
+        fake_send_typing_indicator_safely,
+    )
 
     database = DemoDatabase()
-    scheduler = SchedulerStub()
-    app = create_app(settings=_settings(), database=database, scheduler=scheduler)
+    app = create_app(settings=_settings(), database=database)
 
     with TestClient(app) as client:
         response = client.post(
@@ -272,46 +263,34 @@ async def test_demo_smoke_ingest_then_process_writes_governance_log(
             "sessionId": "session-1",
         }
 
-        result = await run_workflow_b(
-            database,
-            settings=_settings(),
-            now=datetime.now(timezone.utc),
-        )
+    assert database.connected is True
+    assert database.disconnected is True
 
-        assert result.processed is True
-        assert result.decision == GovernanceDecision.ANSWERED
-        assert result.answer_supplied == "We help customers."
-        assert result.similarity_score == 0.92
-        assert result.matcher_used == "openai"
-        assert result.outbound_send_result is not None
-        assert result.outbound_send_result.provider == "normalized"
+    session = database._session_state._sessions["session-1"]
+    assert session.status == "open"
+    assert session.processing is True
+    assert session.messages == []
+    assert session.context == ["What do you do?"]
 
-        session = await database.session_state.get_by_identity("Niyomilan", "whatsapp", "9845891194")
-        assert session is not None
-        assert session.status == "open"
-        assert session.processing is True
-        assert session.messages == []
-        assert session.context == ["What do you do?"]
-
-        written_logs = database.governance_logs.logs
-        assert len(written_logs) == 1
-        assert written_logs[0].decision == GovernanceDecision.ANSWERED
-        assert written_logs[0].combined_text == "What do you do?"
-        assert written_logs[0].answer_supplied == "We help customers."
-        assert written_logs[0].metadata["matcherUsed"] == "openai"
-        assert written_logs[0].metadata["delivery"]["provider"] == "normalized"
-        assert written_logs[0].metadata["workflow"] == "workflow_b"
-        assert written_logs[0].metadata["decision"] == "answered"
-        assert written_logs[0].metadata["sessionId"] == "session-1"
-        assert written_logs[0].metadata["identity"] == {
-            "tenantId": "Niyomilan",
-            "clientId": "whatsapp",
-            "userId": "9845891194",
-        }
-        assert written_logs[0].metadata["similarity"] == {
-            "score": 0.92,
-            "threshold": 0.75,
-            "outcome": "pass",
-            "candidateFound": True,
-        }
-        assert isinstance(written_logs[0].metadata["latencyMs"], int)
+    written_logs = database.governance_logs.logs
+    assert len(written_logs) == 1
+    assert written_logs[0].decision == GovernanceDecision.ANSWERED
+    assert written_logs[0].combined_text == "What do you do?"
+    assert written_logs[0].answer_supplied == "We help customers."
+    assert written_logs[0].metadata["matcherUsed"] == "openai"
+    assert written_logs[0].metadata["delivery"]["provider"] == "normalized"
+    assert written_logs[0].metadata["workflow"] == "workflow_b"
+    assert written_logs[0].metadata["decision"] == "answered"
+    assert written_logs[0].metadata["sessionId"] == "session-1"
+    assert written_logs[0].metadata["identity"] == {
+        "tenantId": "Niyomilan",
+        "clientId": "whatsapp",
+        "userId": "9845891194",
+    }
+    assert written_logs[0].metadata["similarity"] == {
+        "score": 0.92,
+        "threshold": 0.75,
+        "outcome": "pass",
+        "candidateFound": True,
+    }
+    assert isinstance(written_logs[0].metadata["latencyMs"], int)

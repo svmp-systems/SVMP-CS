@@ -74,7 +74,7 @@ export function PreviewLogin({ nextPath = "/dashboard" }: { nextPath?: string })
       </button>
 
       <div className="rounded-[8px] border border-line bg-paper p-4 text-sm leading-6 text-ink/64">
-        Production mode uses Clerk identity, MongoDB verified users, and subscription checks.
+        Production mode uses Supabase Auth plus backend-resolved tenant memberships and subscription checks.
       </div>
     </div>
   );

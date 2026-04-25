@@ -1,4 +1,4 @@
-"""Seed tenant-scoped demo knowledge-base entries into MongoDB."""
+"""Seed tenant-scoped demo knowledge-base entries into Supabase/Postgres."""
 
 from __future__ import annotations
 
@@ -6,11 +6,12 @@ import argparse
 import asyncio
 import json
 import sys
+from collections import defaultdict
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "svmp"
@@ -18,9 +19,8 @@ PACKAGE_ROOT = REPO_ROOT / "svmp"
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from motor.motor_asyncio import AsyncIOMotorClient
-
 from svmp_core.config import Settings, get_settings
+from svmp_core.db.supabase import SupabaseDatabase
 from svmp_core.models import KnowledgeEntry
 
 DEFAULT_SAMPLE_FILE = REPO_ROOT / "scripts" / "demo_data" / "sample_kb.json"
@@ -31,7 +31,7 @@ class SeedEntrySpec(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
-    id: str | None = Field(default=None, alias="_id")
+    id: str | None = Field(default=None, validation_alias=AliasChoices("id", "_id"))
     domain_id: str = Field(alias="domainId")
     question: str
     answer: str
@@ -41,8 +41,6 @@ class SeedEntrySpec(BaseModel):
     @field_validator("id")
     @classmethod
     def _normalize_optional_id(cls, value: str | None) -> str | None:
-        """Normalize optional identifiers so blank IDs do not become upsert keys."""
-
         if value is None:
             return None
         normalized = value.strip()
@@ -51,8 +49,6 @@ class SeedEntrySpec(BaseModel):
     @field_validator("domain_id", "question", "answer")
     @classmethod
     def _require_non_blank(cls, value: str) -> str:
-        """Trim and reject blank required text fields."""
-
         normalized = value.strip()
         if not normalized:
             raise ValueError("seed entry fields must not be blank")
@@ -70,8 +66,6 @@ class SeedBatch(BaseModel):
     @field_validator("tenant_id")
     @classmethod
     def _require_non_blank_tenant(cls, value: str) -> str:
-        """Trim and reject blank tenant IDs."""
-
         normalized = value.strip()
         if not normalized:
             raise ValueError("tenantId must not be blank")
@@ -81,50 +75,28 @@ class SeedBatch(BaseModel):
 class KnowledgeSeedWriter(Protocol):
     """Small write interface used by the seed script and its tests."""
 
-    async def upsert_entries(self, entries: Sequence[KnowledgeEntry]) -> int:
-        """Upsert the provided entries and return the number written."""
+    async def replace_entries(self, entries: Sequence[KnowledgeEntry]) -> int:
+        """Replace the provided entries and return the number written."""
 
 
-class MongoKnowledgeSeedWriter:
-    """Mongo-backed writer that performs repeatable knowledge-entry upserts."""
+class SupabaseKnowledgeSeedWriter:
+    """Supabase-backed writer that replaces seeded tenant/domain slices."""
 
-    def __init__(self, collection) -> None:
-        self._collection = collection
+    def __init__(self, database: SupabaseDatabase) -> None:
+        self._database = database
 
-    async def upsert_entries(self, entries: Sequence[KnowledgeEntry]) -> int:
-        """Replace or insert knowledge entries using stable keys."""
+    async def replace_entries(self, entries: Sequence[KnowledgeEntry]) -> int:
+        grouped: dict[tuple[str, str], list[KnowledgeEntry]] = defaultdict(list)
+        for entry in entries:
+            grouped[(entry.tenant_id, entry.domain_id)].append(entry)
 
         written = 0
-        seeded_domains = {
-            (entry.tenant_id, entry.domain_id)
-            for entry in entries
-        }
-
-        # Reset each seeded tenant/domain slice so legacy demo documents do not
-        # survive alongside the current sample corpus.
-        for tenant_id, domain_id in seeded_domains:
-            await self._collection.delete_many(
-                {
-                    "tenantId": tenant_id,
-                    "domainId": domain_id,
-                }
+        for (tenant_id, domain_id), group in grouped.items():
+            written += await self._database.knowledge_base.replace_entries_for_tenant_domain(
+                tenant_id,
+                domain_id,
+                group,
             )
-
-        for entry in entries:
-            payload = entry.model_dump(by_alias=True, exclude_none=True)
-            filter_doc = (
-                {"_id": entry.id}
-                if entry.id
-                else {
-                    "tenantId": entry.tenant_id,
-                    "domainId": entry.domain_id,
-                    "question": entry.question,
-                }
-            )
-
-            await self._collection.replace_one(filter_doc, payload, upsert=True)
-            written += 1
-
         return written
 
 
@@ -136,7 +108,7 @@ def load_seed_entries(seed_file: Path) -> list[KnowledgeEntry]:
 
     return [
         KnowledgeEntry(
-            _id=entry.id,
+            id=entry.id,
             tenantId=batch.tenant_id,
             domainId=entry.domain_id,
             question=entry.question,
@@ -152,27 +124,26 @@ async def seed_entries_from_file(writer: KnowledgeSeedWriter, seed_file: Path) -
     """Load a seed file and write its entries through the provided writer."""
 
     entries = load_seed_entries(seed_file)
-    return await writer.upsert_entries(entries)
+    return await writer.replace_entries(entries)
 
 
 async def _run(seed_file: Path, *, settings: Settings | None = None) -> int:
-    """Execute the Mongo-backed seed flow and return the write count."""
+    """Execute the Supabase-backed seed flow and return the write count."""
 
     runtime_settings = settings or get_settings()
-    client = AsyncIOMotorClient(runtime_settings.MONGODB_URI)
-
+    database = SupabaseDatabase(settings=runtime_settings)
+    await database.connect()
     try:
-        collection = client[runtime_settings.MONGODB_DB_NAME][runtime_settings.MONGODB_KB_COLLECTION]
-        writer = MongoKnowledgeSeedWriter(collection)
+        writer = SupabaseKnowledgeSeedWriter(database)
         return await seed_entries_from_file(writer, seed_file)
     finally:
-        client.close()
+        await database.disconnect()
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for the seed script."""
 
-    parser = argparse.ArgumentParser(description="Seed demo knowledge-base entries into MongoDB.")
+    parser = argparse.ArgumentParser(description="Seed demo knowledge-base entries into Supabase/Postgres.")
     parser.add_argument(
         "--file",
         dest="seed_file",

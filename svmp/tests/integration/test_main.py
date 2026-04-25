@@ -1,4 +1,4 @@
-"""Integration-style tests for the app factory and scheduler wiring."""
+"""Integration-style tests for app wiring, dashboard APIs, billing, and internal jobs."""
 
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ from svmp_core.models import GovernanceDecision, GovernanceLog, KnowledgeEntry, 
 
 
 class InMemorySessionStateRepository(SessionStateRepository):
-    """Small session repo so the webhook route can run inside app tests."""
+    """Small session repo so app routes can run inside integration tests."""
 
     def __init__(self, sessions: list[SessionState] | None = None) -> None:
         self._sessions: dict[str, SessionState] = {}
@@ -105,6 +105,8 @@ class InMemorySessionStateRepository(SessionStateRepository):
 
 
 class StubKnowledgeRepository(KnowledgeBaseRepository):
+    """Knowledge-base repository with dashboard-friendly read and write helpers."""
+
     def __init__(self, entries: list[KnowledgeEntry] | None = None) -> None:
         self._entries = [entry.model_copy(deep=True) for entry in entries or []]
 
@@ -181,6 +183,8 @@ class StubKnowledgeRepository(KnowledgeBaseRepository):
 
 
 class StubGovernanceRepository(GovernanceLogRepository):
+    """Governance repository with list and aggregation support."""
+
     def __init__(self, logs: list[GovernanceLog] | None = None) -> None:
         self._logs = [log.model_copy(deep=True) for log in logs or []]
 
@@ -211,6 +215,8 @@ class StubGovernanceRepository(GovernanceLogRepository):
 
 
 class StubTenantRepository(TenantRepository):
+    """Tenant repository for dashboard resolution, profile reads, and integration updates."""
+
     def __init__(
         self,
         dashboard_context: Mapping[str, Any] | None = None,
@@ -220,6 +226,7 @@ class StubTenantRepository(TenantRepository):
         self._dashboard_context = deepcopy(dict(dashboard_context)) if dashboard_context else None
         self._tenant_document = deepcopy(dict(tenant_document)) if tenant_document else None
         self._integrations = [deepcopy(dict(item)) for item in integrations or []]
+        self.last_resolve_kwargs: dict[str, Any] | None = None
 
     async def get_by_tenant_id(self, tenant_id: str) -> Mapping[str, Any] | None:
         if self._tenant_document and self._tenant_document.get("tenantId") == tenant_id:
@@ -229,12 +236,17 @@ class StubTenantRepository(TenantRepository):
     async def resolve_dashboard_tenant_context(
         self,
         *,
-        auth_provider: str = "clerk",
+        auth_provider: str = "supabase",
         provider_user_id: str | None = None,
         email: str | None = None,
-        clerk_organization_id: str | None = None,
-        clerk_user_id: str | None = None,
+        organization_id: str | None = None,
     ) -> Mapping[str, Any] | None:
+        self.last_resolve_kwargs = {
+            "auth_provider": auth_provider,
+            "provider_user_id": provider_user_id,
+            "email": email,
+            "organization_id": organization_id,
+        }
         return deepcopy(self._dashboard_context) if self._dashboard_context else None
 
     async def list_integration_status(
@@ -295,6 +307,8 @@ class StubTenantRepository(TenantRepository):
 
 
 class StubAuditRepository(AuditLogRepository):
+    """Audit repository that captures dashboard writes."""
+
     def __init__(self) -> None:
         self.logs: list[Mapping[str, Any]] = []
 
@@ -305,6 +319,8 @@ class StubAuditRepository(AuditLogRepository):
 
 
 class StubBillingRepository(BillingSubscriptionRepository):
+    """Billing repository keyed by tenant id."""
+
     def __init__(self, records: list[Mapping[str, Any]] | None = None) -> None:
         self.records = {
             str(record["tenantId"]): deepcopy(dict(record))
@@ -341,6 +357,8 @@ class StubBillingRepository(BillingSubscriptionRepository):
 
 
 class StubProviderEventRepository(ProviderEventRepository):
+    """Provider-event repository with idempotent recording."""
+
     def __init__(self) -> None:
         self.events: set[tuple[str, str]] = set()
 
@@ -421,114 +439,55 @@ class TestDatabase(Database):
         self.disconnected = True
 
 
-class SchedulerStub:
-    """Simple scheduler stub that records attached jobs and lifecycle calls."""
-
-    def __init__(self) -> None:
-        self.jobs: dict[str, dict[str, Any]] = {}
-        self.running = False
-        self.started = False
-        self.stopped = False
-
-    def add_job(self, func, trigger: str, id: str, replace_existing: bool, kwargs: dict[str, Any], **schedule):
-        self.jobs[id] = {
-            "func": func,
-            "trigger": trigger,
-            "replace_existing": replace_existing,
-            "kwargs": kwargs,
-            "schedule": schedule,
-        }
-
-    def get_job(self, job_id: str):
-        return self.jobs.get(job_id)
-
-    def start(self) -> None:
-        self.running = True
-        self.started = True
-
-    def shutdown(self, wait: bool = False) -> None:
-        self.running = False
-        self.stopped = True
-
-
-def _settings() -> Settings:
+def _settings(**overrides: Any) -> Settings:
     """Return deterministic app settings for tests."""
 
-    return Settings(
-        _env_file=None,
-        APP_NAME="SVMP-Test",
-        MONGODB_URI="mongodb://unit-test",
-        OPENAI_API_KEY="test-key",
-        WHATSAPP_PROVIDER="meta",
-        WHATSAPP_TOKEN="test-whatsapp-token",
-        WHATSAPP_PHONE_NUMBER_ID="1234567890",
-        WHATSAPP_VERIFY_TOKEN="verify-me",
-        META_APP_SECRET="app-secret",
-        WORKFLOW_B_INTERVAL_SECONDS=1,
-        WORKFLOW_C_INTERVAL_HOURS=24,
-    )
+    base = {
+        "_env_file": None,
+        "APP_NAME": "SVMP-Test",
+        "DATABASE_URL": "postgresql://unit-test/postgres",
+        "OPENAI_API_KEY": "test-key",
+        "WHATSAPP_PROVIDER": "normalized",
+        "ALLOW_NORMALIZED_WEBHOOKS": True,
+        "DEBOUNCE_MS": 0,
+        "WORKFLOW_B_MAX_BATCH_SIZE": 25,
+        "WORKFLOW_C_INTERVAL_HOURS": 24,
+    }
+    base.update(overrides)
+    return Settings(**base)
 
 
-def test_create_app_boots_and_wires_lifecycle_dependencies() -> None:
-    """The app factory should connect DB, start scheduler, and expose health checks."""
+def _trusted_headers(
+    *,
+    user_id: str = "user_123",
+    organization_id: str = "org_123",
+    email: str | None = "owner@stayparfums.com",
+) -> dict[str, str]:
+    """Return trusted dashboard auth headers for integration tests."""
 
-    database = TestDatabase()
-    scheduler = SchedulerStub()
-    app = create_app(settings=_settings(), database=database, scheduler=scheduler)
-
-    with TestClient(app) as client:
-        response = client.get("/health")
-
-        assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
-        assert database.connected is True
-        assert scheduler.started is True
-        assert "workflow_c" in scheduler.jobs
-
-    assert database.disconnected is True
-    assert scheduler.stopped is True
+    headers = {
+        "X-SVMP-User-Id": user_id,
+        "X-SVMP-Organization-Id": organization_id,
+    }
+    if email is not None:
+        headers["X-SVMP-User-Email"] = email
+    return headers
 
 
-def test_create_app_registers_webhook_route() -> None:
-    """The app should expose the webhook verification route after startup."""
+def _stripe_signature(raw_body: bytes, secret: str) -> str:
+    """Build a valid Stripe test signature."""
 
-    app = create_app(settings=_settings(), database=TestDatabase(), scheduler=SchedulerStub())
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/webhook",
-            params={
-                "hub.mode": "subscribe",
-                "hub.verify_token": "verify-me",
-                "hub.challenge": "12345",
-            },
-        )
-
-        assert response.status_code == 200
-        assert response.text == "12345"
+    timestamp = int(datetime.now(timezone.utc).timestamp())
+    signed_payload = str(timestamp).encode("utf-8") + b"." + raw_body
+    signature = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    return f"t={timestamp},v1={signature}"
 
 
-def test_create_app_boots_with_twilio_runtime_settings() -> None:
-    """Twilio provider settings should also satisfy runtime startup validation."""
+def test_create_app_boots_and_exposes_health() -> None:
+    """The app factory should connect the database and expose health checks."""
 
     database = TestDatabase()
-    scheduler = SchedulerStub()
-    app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Twilio-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="twilio",
-            TWILIO_ACCOUNT_SID="AC123",
-            TWILIO_AUTH_TOKEN="secret",
-            TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
-        database=database,
-        scheduler=scheduler,
-    )
+    app = create_app(settings=_settings(), database=database)
 
     with TestClient(app) as client:
         response = client.get("/health")
@@ -543,274 +502,46 @@ def test_create_app_boots_with_twilio_runtime_settings() -> None:
 def test_dashboard_me_requires_enabled_dashboard_auth() -> None:
     """Dashboard APIs should reject requests when dashboard auth is disabled."""
 
-    app = create_app(settings=_settings(), database=TestDatabase(), scheduler=SchedulerStub())
+    app = create_app(settings=_settings(), database=TestDatabase())
 
     with TestClient(app) as client:
         response = client.get("/api/me")
 
-        assert response.status_code == 401
-        assert response.json()["detail"] == "dashboard authentication is disabled"
+    assert response.status_code == 401
+    assert response.json()["detail"] == "dashboard authentication is disabled"
 
 
 def test_dashboard_me_resolves_tenant_context_from_backend_membership() -> None:
     """The browser must not be able to choose the tenant boundary."""
 
-    database = TestDatabase(
-        tenant_repo=StubTenantRepository(
-            {
-                "tenantId": "stay",
-                "tenantName": "Stay Parfums",
-                "role": "admin",
-                "subscriptionStatus": "active",
-            }
-        )
-    )
-    app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
-        database=database,
-        scheduler=SchedulerStub(),
-    )
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/api/me",
-            params={"tenantId": "evil"},
-            headers={
-                "X-SVMP-User-Id": "user_123",
-                "X-SVMP-Organization-Id": "org_123",
-                "X-SVMP-User-Email": "admin@stayparfums.com",
-            },
-        )
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["tenantId"] == "stay"
-        assert body["tenantName"] == "Stay Parfums"
-        assert body["role"] == "admin"
-        assert body["subscriptionStatus"] == "active"
-        assert body["hasActiveSubscription"] is True
-        assert "knowledge_base.manage" in body["allowedActions"]
-        assert "billing.manage" not in body["allowedActions"]
-
-
-def test_dashboard_me_limits_inactive_subscription_to_billing_actions() -> None:
-    """Inactive tenants should only receive billing recovery actions from /api/me."""
-
-    database = TestDatabase(
-        tenant_repo=StubTenantRepository(
-            {
-                "tenantId": "stay",
-                "tenantName": "Stay Parfums",
-                "role": "owner",
-                "subscriptionStatus": "past_due",
-            }
-        )
-    )
-    app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Billing-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
-        database=database,
-        scheduler=SchedulerStub(),
-    )
-
-    with TestClient(app) as client:
-        response = client.get(
-            "/api/me",
-            headers={
-                "X-SVMP-User-Id": "user_123",
-                "X-SVMP-Organization-Id": "org_123",
-            },
-        )
-
-        assert response.status_code == 200
-        body = response.json()
-        assert body["hasActiveSubscription"] is False
-        assert body["allowedActions"] == [
-            "billing.read",
-            "billing.checkout",
-            "billing.portal",
-        ]
-
-
-def test_dashboard_read_endpoints_return_resolved_tenant_data() -> None:
-    """Dashboard read APIs should use the resolved tenant for every query."""
-
-    now = datetime(2026, 4, 17, 8, 0, tzinfo=timezone.utc)
     tenant_repo = StubTenantRepository(
         {
             "tenantId": "stay",
             "tenantName": "Stay Parfums",
-            "role": "owner",
+            "role": "admin",
             "subscriptionStatus": "active",
-        },
-        tenant_document={
-            "tenantId": "stay",
-            "tenantName": "Stay Parfums",
-            "websiteUrl": "https://stayparfums.com",
-            "industry": "Fragrance",
-            "supportEmail": "support@stayparfums.com",
-            "brandVoice": {
-                "tone": "Warm, polished, premium",
-                "use": ["concise"],
-                "avoid": ["overpromising"],
-            },
-            "settings": {"confidenceThreshold": 0.75},
-        },
-        integrations=[
-            {
-                "tenantId": "stay",
-                "provider": "whatsapp",
-                "status": "connected",
-                "health": "healthy",
-                "accessToken": "secret-token",
-            }
-        ],
+        }
     )
-    database = TestDatabase(
-        tenant_repo=tenant_repo,
-        session_repo=InMemorySessionStateRepository(
-            [
-                SessionState(
-                    _id="session-1",
-                    tenantId="stay",
-                    clientId="whatsapp",
-                    userId="9845891194",
-                    provider="meta",
-                    messages=[MessageItem(text="Do you have free shipping?", at=now)],
-                    createdAt=now,
-                    updatedAt=now,
-                    debounceExpiresAt=now,
-                )
-            ]
-        ),
-        knowledge_repo=StubKnowledgeRepository(
-            [
-                KnowledgeEntry(
-                    _id="faq-shipping",
-                    tenantId="stay",
-                    domainId="general",
-                    question="Do you have free shipping?",
-                    answer="Yes, shipping is free.",
-                    tags=["shipping"],
-                    active=True,
-                )
-            ]
-        ),
-        governance_repo=StubGovernanceRepository(
-            [
-                GovernanceLog(
-                    _id="log-1",
-                    tenantId="stay",
-                    clientId="whatsapp",
-                    userId="9845891194",
-                    decision=GovernanceDecision.ANSWERED,
-                    similarityScore=0.92,
-                    combinedText="Do you have free shipping?",
-                    answerSupplied="Yes, shipping is free.",
-                    timestamp=now,
-                    metadata={"matchedQuestion": "Do you have free shipping?"},
-                )
-            ]
-        ),
-    )
+    database = TestDatabase(tenant_repo=tenant_repo)
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Read-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
+        settings=_settings(DASHBOARD_AUTH_MODE="trusted_headers"),
         database=database,
-        scheduler=SchedulerStub(),
     )
-    headers = {
-        "X-SVMP-User-Id": "user_123",
-        "X-SVMP-Organization-Id": "org_123",
-    }
 
     with TestClient(app) as client:
-        tenant_response = client.get("/api/tenant", params={"tenantId": "evil"}, headers=headers)
-        overview_response = client.get("/api/overview", headers=headers)
-        sessions_response = client.get("/api/sessions", headers=headers)
-        session_detail_response = client.get("/api/sessions/session-1", headers=headers)
-        kb_response = client.get("/api/knowledge-base", params={"search": "shipping"}, headers=headers)
-        test_question_response = client.post(
-            "/api/test-question",
-            json={"question": "Do you have free shipping?"},
-            headers=headers,
-        )
-        brand_response = client.get("/api/brand-voice", headers=headers)
-        governance_response = client.get("/api/governance", headers=headers)
-        integrations_response = client.get("/api/integrations", headers=headers)
+        response = client.get("/api/me", headers=_trusted_headers())
 
-        assert tenant_response.status_code == 200
-        assert tenant_response.json()["tenantId"] == "stay"
-        assert tenant_response.json()["supportEmail"] == "support@stayparfums.com"
-
-        assert overview_response.status_code == 200
-        assert overview_response.json()["metrics"]["aiResolved"] == 1
-        assert overview_response.json()["metrics"]["deflectionRate"] == 1.0
-
-        assert sessions_response.status_code == 200
-        assert sessions_response.json()["sessions"][0]["tenantId"] == "stay"
-        assert sessions_response.json()["sessions"][0]["latestMessage"] == "Do you have free shipping?"
-
-        assert session_detail_response.status_code == 200
-        assert session_detail_response.json()["session"]["_id"] == "session-1"
-        assert session_detail_response.json()["session"]["dashboardStatus"] == "resolved"
-        assert session_detail_response.json()["governanceLogs"][0]["_id"] == "log-1"
-
-        assert kb_response.status_code == 200
-        assert kb_response.json()["entries"][0]["_id"] == "faq-shipping"
-
-        assert test_question_response.status_code == 200
-        assert test_question_response.json()["decision"] == "answered"
-        assert test_question_response.json()["response"] == "Yes, shipping is free."
-        assert test_question_response.json()["matchedKnowledgeBaseEntry"]["_id"] == "faq-shipping"
-
-        assert brand_response.status_code == 200
-        assert brand_response.json()["brandVoice"]["tone"] == "Warm, polished, premium"
-
-        assert governance_response.status_code == 200
-        assert governance_response.json()["logs"][0]["decision"] == "answered"
-
-        assert integrations_response.status_code == 200
-        whatsapp = integrations_response.json()["integrations"][0]
-        assert whatsapp["provider"] == "whatsapp"
-        assert whatsapp["accessToken"] == "[redacted]"
+    assert response.status_code == 200
+    assert response.json()["tenantId"] == "stay"
+    assert response.json()["role"] == "admin"
+    assert response.json()["hasActiveSubscription"] is True
+    assert "knowledge_base.manage" in response.json()["allowedActions"]
+    assert tenant_repo.last_resolve_kwargs == {
+        "auth_provider": "trusted_headers",
+        "provider_user_id": "user_123",
+        "email": "owner@stayparfums.com",
+        "organization_id": "org_123",
+    }
 
 
 def test_dashboard_operational_reads_require_active_subscription() -> None:
@@ -827,35 +558,157 @@ def test_dashboard_operational_reads_require_active_subscription() -> None:
         )
     )
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Inactive-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
+        settings=_settings(DASHBOARD_AUTH_MODE="trusted_headers"),
         database=database,
-        scheduler=SchedulerStub(),
     )
 
     with TestClient(app) as client:
-        response = client.get(
-            "/api/overview",
-            headers={
-                "X-SVMP-User-Id": "user_123",
-                "X-SVMP-Organization-Id": "org_123",
-            },
-        )
+        response = client.get("/api/overview", headers=_trusted_headers())
 
-        assert response.status_code == 402
-        assert response.json()["detail"] == "active subscription required"
+    assert response.status_code == 402
+    assert response.json()["detail"] == "active subscription required"
+
+
+def test_dashboard_operational_reads_return_expected_payloads() -> None:
+    """Dashboard reads should return current tenant-scoped data and redacted integrations."""
+
+    session_repo = InMemorySessionStateRepository(
+        [
+            SessionState(
+                id="session-1",
+                tenantId="stay",
+                clientId="whatsapp",
+                userId="919845891194",
+                provider="meta",
+                status="open",
+                processing=False,
+                context=["Customer asked about fragrances."],
+                messages=[MessageItem(text="Do you have free shipping?")],
+                createdAt=datetime(2026, 4, 25, 9, 0, tzinfo=timezone.utc),
+                updatedAt=datetime(2026, 4, 25, 9, 5, tzinfo=timezone.utc),
+                debounceExpiresAt=datetime(2026, 4, 25, 9, 5, tzinfo=timezone.utc),
+            )
+        ]
+    )
+    knowledge_repo = StubKnowledgeRepository(
+        [
+            KnowledgeEntry(
+                id="faq-shipping",
+                tenantId="stay",
+                domainId="general",
+                question="Do you have free shipping?",
+                answer="Yes, shipping is free.",
+                tags=["shipping"],
+                active=True,
+            )
+        ]
+    )
+    governance_repo = StubGovernanceRepository(
+        [
+            GovernanceLog(
+                id="log-1",
+                tenantId="stay",
+                clientId="whatsapp",
+                userId="919845891194",
+                decision=GovernanceDecision.ANSWERED,
+                combinedText="Do you have free shipping?",
+                answerSupplied="Yes, shipping is free.",
+                metadata={
+                    "sessionId": "session-1",
+                    "workflow": "workflow_b",
+                },
+                timestamp=datetime(2026, 4, 25, 9, 6, tzinfo=timezone.utc),
+            )
+        ]
+    )
+    tenant_repo = StubTenantRepository(
+        {
+            "tenantId": "stay",
+            "tenantName": "Stay Parfums",
+            "role": "owner",
+            "subscriptionStatus": "active",
+        },
+        tenant_document={
+            "tenantId": "stay",
+            "tenantName": "Stay Parfums",
+            "websiteUrl": "https://stayparfums.com",
+            "supportEmail": "support@stayparfums.com",
+            "domains": [{"domainId": "general", "name": "General"}],
+            "settings": {"confidenceThreshold": 0.75},
+            "brandVoice": {"tone": "Warm, polished, premium"},
+            "onboarding": {"status": "completed"},
+        },
+        integrations=[
+            {
+                "tenantId": "stay",
+                "provider": "whatsapp",
+                "status": "connected",
+                "health": "healthy",
+                "accessToken": "super-secret-token",
+            }
+        ],
+    )
+    database = TestDatabase(
+        tenant_repo=tenant_repo,
+        session_repo=session_repo,
+        knowledge_repo=knowledge_repo,
+        governance_repo=governance_repo,
+    )
+    app = create_app(
+        settings=_settings(DASHBOARD_AUTH_MODE="trusted_headers"),
+        database=database,
+    )
+
+    with TestClient(app) as client:
+        tenant_response = client.get("/api/tenant", headers=_trusted_headers())
+        overview_response = client.get("/api/overview", headers=_trusted_headers())
+        sessions_response = client.get("/api/sessions", headers=_trusted_headers())
+        session_detail_response = client.get("/api/sessions/session-1", headers=_trusted_headers())
+        kb_response = client.get("/api/knowledge-base", headers=_trusted_headers())
+        test_question_response = client.post(
+            "/api/test-question",
+            json={"question": "Do you have free shipping?", "domainId": "general"},
+            headers=_trusted_headers(),
+        )
+        brand_response = client.get("/api/brand-voice", headers=_trusted_headers())
+        governance_response = client.get("/api/governance", headers=_trusted_headers())
+        integrations_response = client.get("/api/integrations", headers=_trusted_headers())
+
+    assert tenant_response.status_code == 200
+    assert tenant_response.json()["tenantId"] == "stay"
+    assert tenant_response.json()["supportEmail"] == "support@stayparfums.com"
+
+    assert overview_response.status_code == 200
+    assert overview_response.json()["metrics"]["aiResolved"] == 1
+    assert overview_response.json()["metrics"]["deflectionRate"] == 1.0
+
+    assert sessions_response.status_code == 200
+    assert sessions_response.json()["sessions"][0]["tenantId"] == "stay"
+    assert sessions_response.json()["sessions"][0]["latestMessage"] == "Do you have free shipping?"
+
+    assert session_detail_response.status_code == 200
+    assert session_detail_response.json()["session"]["id"] == "session-1"
+    assert session_detail_response.json()["session"]["dashboardStatus"] == "resolved"
+    assert session_detail_response.json()["governanceLogs"][0]["id"] == "log-1"
+
+    assert kb_response.status_code == 200
+    assert kb_response.json()["entries"][0]["id"] == "faq-shipping"
+
+    assert test_question_response.status_code == 200
+    assert test_question_response.json()["decision"] == "answered"
+    assert test_question_response.json()["response"] == "Yes, shipping is free."
+    assert test_question_response.json()["matchedKnowledgeBaseEntry"]["id"] == "faq-shipping"
+
+    assert brand_response.status_code == 200
+    assert brand_response.json()["brandVoice"]["tone"] == "Warm, polished, premium"
+
+    assert governance_response.status_code == 200
+    assert governance_response.json()["logs"][0]["decision"] == "answered"
+
+    assert integrations_response.status_code == 200
+    whatsapp = integrations_response.json()["integrations"][0]
+    assert whatsapp["provider"] == "whatsapp"
+    assert whatsapp["accessToken"] == "[redacted]"
 
 
 def test_dashboard_write_endpoints_enforce_roles_and_write_audit_logs() -> None:
@@ -865,7 +718,7 @@ def test_dashboard_write_endpoints_enforce_roles_and_write_audit_logs() -> None:
     knowledge_repo = StubKnowledgeRepository(
         [
             KnowledgeEntry(
-                _id="faq-shipping",
+                id="faq-shipping",
                 tenantId="stay",
                 domainId="general",
                 question="Do you have free shipping?",
@@ -894,28 +747,9 @@ def test_dashboard_write_endpoints_enforce_roles_and_write_audit_logs() -> None:
         audit_repo=audit_repo,
     )
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Write-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
+        settings=_settings(DASHBOARD_AUTH_MODE="trusted_headers"),
         database=database,
-        scheduler=SchedulerStub(),
     )
-    headers = {
-        "X-SVMP-User-Id": "owner_123",
-        "X-SVMP-Organization-Id": "org_123",
-        "X-SVMP-User-Email": "owner@stayparfums.com",
-    }
 
     with TestClient(app) as client:
         tenant_response = client.patch(
@@ -924,12 +758,12 @@ def test_dashboard_write_endpoints_enforce_roles_and_write_audit_logs() -> None:
                 "tenantName": "Stay Parfums India",
                 "settings": {"confidenceThreshold": 0.82, "ignoredSetting": True},
             },
-            headers=headers,
+            headers=_trusted_headers(),
         )
         brand_response = client.patch(
             "/api/brand-voice",
             json={"tone": "Warm, polished", "avoid": ["overpromising"]},
-            headers=headers,
+            headers=_trusted_headers(),
         )
         create_response = client.post(
             "/api/knowledge-base",
@@ -940,50 +774,47 @@ def test_dashboard_write_endpoints_enforce_roles_and_write_audit_logs() -> None:
                 "tags": ["offer"],
                 "active": True,
             },
-            headers=headers,
+            headers=_trusted_headers(),
         )
         update_response = client.patch(
             "/api/knowledge-base/faq-shipping",
             json={"answer": "Yes, shipping is free on all orders."},
-            headers=headers,
+            headers=_trusted_headers(),
         )
         delete_response = client.delete(
             "/api/knowledge-base/faq-shipping",
-            headers=headers,
+            headers=_trusted_headers(),
         )
         integration_response = client.patch(
             "/api/integrations/whatsapp",
             json={"status": "connected", "health": "healthy"},
-            headers=headers,
+            headers=_trusted_headers(),
         )
 
-        assert tenant_response.status_code == 200
-        assert tenant_response.json()["tenantName"] == "Stay Parfums India"
-        assert tenant_response.json()["settings"]["confidenceThreshold"] == 0.82
-        assert "ignoredSetting" not in tenant_response.json()["settings"]
+    assert tenant_response.status_code == 200
+    assert tenant_response.json()["tenantName"] == "Stay Parfums India"
+    assert tenant_response.json()["settings"]["confidenceThreshold"] == 0.82
+    assert "ignoredSetting" not in tenant_response.json()["settings"]
 
-        assert brand_response.status_code == 200
-        assert brand_response.json()["brandVoice"]["tone"] == "Warm, polished"
-        assert brand_response.json()["brandVoice"]["avoid"] == ["overpromising"]
+    assert brand_response.status_code == 200
+    assert brand_response.json()["brandVoice"]["tone"] == "Warm, polished"
+    assert brand_response.json()["brandVoice"]["avoid"] == ["overpromising"]
 
-        assert create_response.status_code == 201
-        assert create_response.json()["tenantId"] == "stay"
-        assert create_response.json()["question"] == "What is the pair offer?"
+    assert create_response.status_code == 201
+    assert create_response.json()["tenantId"] == "stay"
+    assert create_response.json()["question"] == "What is the pair offer?"
 
-        assert update_response.status_code == 200
-        assert update_response.json()["answer"] == "Yes, shipping is free on all orders."
+    assert update_response.status_code == 200
+    assert update_response.json()["answer"] == "Yes, shipping is free on all orders."
 
-        assert delete_response.status_code == 200
-        assert delete_response.json()["active"] is False
+    assert delete_response.status_code == 200
+    assert delete_response.json()["active"] is False
 
-        assert integration_response.status_code == 200
-        assert integration_response.json()["provider"] == "whatsapp"
-        assert integration_response.json()["status"] == "connected"
+    assert integration_response.status_code == 200
+    assert integration_response.json()["provider"] == "whatsapp"
+    assert integration_response.json()["status"] == "connected"
 
-    assert [
-        log["action"]
-        for log in audit_repo.logs
-    ] == [
+    assert [log["action"] for log in audit_repo.logs] == [
         "tenant.updated",
         "brand_voice.updated",
         "knowledge_base.created",
@@ -1009,32 +840,15 @@ def test_dashboard_write_endpoints_reject_analyst_and_integration_secrets() -> N
         )
     )
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Write-Role-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
+        settings=_settings(DASHBOARD_AUTH_MODE="trusted_headers"),
         database=database,
-        scheduler=SchedulerStub(),
     )
 
     with TestClient(app) as client:
         role_response = client.patch(
             "/api/brand-voice",
             json={"tone": "Warm"},
-            headers={
-                "X-SVMP-User-Id": "analyst_123",
-                "X-SVMP-Organization-Id": "org_123",
-            },
+            headers=_trusted_headers(),
         )
 
     assert role_response.status_code == 403
@@ -1051,41 +865,22 @@ def test_dashboard_write_endpoints_reject_analyst_and_integration_secrets() -> N
         )
     )
     owner_app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Dashboard-Secret-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
-            DASHBOARD_AUTH_MODE="trusted_headers",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
-        ),
+        settings=_settings(DASHBOARD_AUTH_MODE="trusted_headers"),
         database=owner_database,
-        scheduler=SchedulerStub(),
     )
 
     with TestClient(owner_app) as client:
         secret_response = client.patch(
             "/api/integrations/whatsapp",
             json={"metadata": {"accessToken": "do-not-store-here"}},
-            headers={
-                "X-SVMP-User-Id": "owner_123",
-                "X-SVMP-Organization-Id": "org_123",
-            },
+            headers=_trusted_headers(),
         )
 
     assert secret_response.status_code == 400
     assert secret_response.json()["detail"] == "integration secrets must not be submitted to this endpoint"
 
 
-def test_billing_checkout_session_allows_inactive_owner(
-    monkeypatch,
-) -> None:
+def test_billing_checkout_session_allows_inactive_owner(monkeypatch) -> None:
     """Owners should be able to recover billing even when subscription is inactive."""
 
     captured: dict[str, Any] = {}
@@ -1113,34 +908,19 @@ def test_billing_checkout_session_allows_inactive_owner(
         ),
     )
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Billing-Checkout-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
+        settings=_settings(
             DASHBOARD_AUTH_MODE="trusted_headers",
             DASHBOARD_APP_URL="https://app.svmpsystems.com",
             STRIPE_SECRET_KEY="sk_test_123",
             STRIPE_PRICE_ID="price_123",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
         ),
         database=database,
-        scheduler=SchedulerStub(),
     )
 
     with TestClient(app) as client:
         response = client.post(
             "/api/billing/create-checkout-session",
-            headers={
-                "X-SVMP-User-Id": "owner_123",
-                "X-SVMP-Organization-Id": "org_123",
-            },
+            headers=_trusted_headers(),
         )
 
     assert response.status_code == 200
@@ -1158,21 +938,10 @@ def test_billing_checkout_session_rejects_non_owner() -> None:
     """Billing session creation should be owner-only."""
 
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Billing-Role-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
+        settings=_settings(
             DASHBOARD_AUTH_MODE="trusted_headers",
             STRIPE_SECRET_KEY="sk_test_123",
             STRIPE_PRICE_ID="price_123",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
         ),
         database=TestDatabase(
             tenant_repo=StubTenantRepository(
@@ -1184,26 +953,15 @@ def test_billing_checkout_session_rejects_non_owner() -> None:
                 }
             )
         ),
-        scheduler=SchedulerStub(),
     )
 
     with TestClient(app) as client:
         response = client.post(
             "/api/billing/create-checkout-session",
-            headers={
-                "X-SVMP-User-Id": "admin_123",
-                "X-SVMP-Organization-Id": "org_123",
-            },
+            headers=_trusted_headers(user_id="admin_123"),
         )
 
     assert response.status_code == 403
-
-
-def _stripe_signature(raw_body: bytes, secret: str) -> str:
-    timestamp = int(datetime.now(timezone.utc).timestamp())
-    signed_payload = str(timestamp).encode("utf-8") + b"." + raw_body
-    signature = hmac.new(secret.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
-    return f"t={timestamp},v1={signature}"
 
 
 def test_stripe_webhook_verifies_signature_and_processes_once() -> None:
@@ -1226,22 +984,10 @@ def test_stripe_webhook_verifies_signature_and_processes_once() -> None:
         provider_events_repo=provider_events_repo,
     )
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Stripe-Webhook-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
+        settings=_settings(
             STRIPE_WEBHOOK_SECRET="whsec_test",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
         ),
         database=database,
-        scheduler=SchedulerStub(),
     )
     event = {
         "id": "evt_123",
@@ -1282,22 +1028,10 @@ def test_stripe_webhook_rejects_invalid_signature() -> None:
     """Stripe webhooks should reject invalid signatures before processing."""
 
     app = create_app(
-        settings=Settings(
-            _env_file=None,
-            APP_NAME="SVMP-Stripe-Bad-Signature-Test",
-            MONGODB_URI="mongodb://unit-test",
-            OPENAI_API_KEY="test-key",
-            WHATSAPP_PROVIDER="meta",
-            WHATSAPP_TOKEN="test-whatsapp-token",
-            WHATSAPP_PHONE_NUMBER_ID="1234567890",
-            WHATSAPP_VERIFY_TOKEN="verify-me",
-            META_APP_SECRET="app-secret",
+        settings=_settings(
             STRIPE_WEBHOOK_SECRET="whsec_test",
-            WORKFLOW_B_INTERVAL_SECONDS=1,
-            WORKFLOW_C_INTERVAL_HOURS=24,
         ),
         database=TestDatabase(),
-        scheduler=SchedulerStub(),
     )
     body = b'{"id":"evt_bad","type":"checkout.session.completed","data":{"object":{}}}'
 
@@ -1312,3 +1046,131 @@ def test_stripe_webhook_rejects_invalid_signature() -> None:
         )
 
     assert response.status_code == 400
+    assert response.json()["detail"] in {
+        "invalid Stripe signature",
+        "Stripe signature timestamp is outside tolerance",
+    }
+
+
+def test_internal_job_routes_accept_vercel_cron_secret_and_support_get(monkeypatch) -> None:
+    """Vercel cron should be able to call internal routes with GET and CRON_SECRET."""
+
+    results = iter(
+        [
+            SimpleRunResult(processed=True, session_id="session-1", decision="answered"),
+            SimpleRunResult(processed=True, session_id="session-2", decision="escalated"),
+        ]
+    )
+
+    async def fake_run_workflow_b(database, *, settings=None):
+        try:
+            current = next(results)
+        except StopIteration:
+            return SimpleRunResult(processed=False, session_id=None, decision=None)
+        return current
+
+    monkeypatch.setattr("svmp_core.routes.internal_jobs.run_workflow_b", fake_run_workflow_b)
+
+    app = create_app(
+        settings=_settings(CRON_SECRET="cron-secret", WORKFLOW_B_MAX_BATCH_SIZE=2),
+        database=TestDatabase(),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/internal/jobs/process-ready-sessions",
+            params={"maxRuns": 100},
+            headers={"Authorization": "Bearer cron-secret"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "processedCount": 2,
+        "drained": False,
+        "capacityReached": True,
+        "maxRunsRequested": 100,
+        "maxRunsApplied": 2,
+        "runs": [
+            {
+                "sessionId": "session-1",
+                "decision": "answered",
+                "domainId": None,
+                "matcherUsed": None,
+                "reason": None,
+            },
+            {
+                "sessionId": "session-2",
+                "decision": "escalated",
+                "domainId": None,
+                "matcherUsed": None,
+                "reason": None,
+            },
+        ],
+    }
+
+
+def test_internal_cleanup_route_accepts_post_and_header_secret(monkeypatch) -> None:
+    """Internal cleanup should accept explicit header secrets for non-Vercel callers."""
+
+    async def fake_run_workflow_c(database, *, settings=None):
+        return SimpleCleanupResult(
+            stale_sessions_found=3,
+            governance_logs_written=3,
+            sessions_deleted=3,
+            cutoff_time=datetime(2026, 4, 25, 10, 0, tzinfo=timezone.utc),
+        )
+
+    monkeypatch.setattr("svmp_core.routes.internal_jobs.run_workflow_c", fake_run_workflow_c)
+
+    app = create_app(
+        settings=_settings(INTERNAL_JOB_SECRET="job-secret"),
+        database=TestDatabase(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/internal/jobs/cleanup-stale-sessions",
+            headers={"X-SVMP-Job-Secret": "job-secret"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["staleSessionsFound"] == 3
+    assert response.json()["governanceLogsWritten"] == 3
+    assert response.json()["sessionsDeleted"] == 3
+
+
+class SimpleRunResult:
+    """Small helper matching the subset of Workflow B fields used by internal jobs."""
+
+    def __init__(self, *, processed: bool, session_id: str | None, decision: str | None) -> None:
+        self.processed = processed
+        self.session_id = session_id
+        self.decision = SimpleDecision(decision) if decision is not None else None
+        self.domain_id = None
+        self.matcher_used = None
+        self.reason = None
+
+
+class SimpleDecision:
+    """Small enum-like wrapper used by SimpleRunResult."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+
+class SimpleCleanupResult:
+    """Small helper matching the Workflow C response contract."""
+
+    def __init__(
+        self,
+        *,
+        stale_sessions_found: int,
+        governance_logs_written: int,
+        sessions_deleted: int,
+        cutoff_time: datetime,
+    ) -> None:
+        self.stale_sessions_found = stale_sessions_found
+        self.governance_logs_written = governance_logs_written
+        self.sessions_deleted = sessions_deleted
+        self.cutoff_time = cutoff_time

@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     DASHBOARD_CORS_ORIGINS: str | None = None
 
     INTERNAL_JOB_SECRET: SecretStr | None = None
+    CRON_SECRET: SecretStr | None = None
 
     STRIPE_SECRET_KEY: SecretStr | None = None
     STRIPE_WEBHOOK_SECRET: SecretStr | None = None
@@ -110,6 +111,11 @@ class Settings(BaseSettings):
         if issuer is None:
             return None
         return f"{issuer}/.well-known/jwks.json"
+
+    def internal_job_secret(self) -> str | None:
+        """Return the shared secret accepted by internal job endpoints."""
+
+        return _normalized_secret(self.INTERNAL_JOB_SECRET) or _normalized_secret(self.CRON_SECRET)
 
     def validate_runtime(self) -> None:
         """Fail fast when the live runtime is missing required env values."""
@@ -164,11 +170,8 @@ class Settings(BaseSettings):
             if production and _missing_string(self.DASHBOARD_APP_URL):
                 missing.append("DASHBOARD_APP_URL")
 
-        if production and (
-            self.INTERNAL_JOB_SECRET is None
-            or _normalized_secret(self.INTERNAL_JOB_SECRET) is None
-        ):
-            missing.append("INTERNAL_JOB_SECRET")
+        if production and self.internal_job_secret() is None:
+            missing.append("INTERNAL_JOB_SECRET or CRON_SECRET")
 
         billing_mode = self.BILLING_MODE.strip().lower()
         if billing_mode not in {"manual", "stripe"}:

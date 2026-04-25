@@ -14,27 +14,19 @@ from svmp_core.exceptions import ConfigError
 
 
 def test_settings_defaults_load() -> None:
-    """Settings expose the expected Mongo-first defaults."""
+    """Settings expose the expected Supabase/Vercel defaults."""
 
     loaded = Settings(_env_file=None)
 
     assert loaded.APP_NAME == "SVMP"
     assert loaded.APP_ENV == "development"
-    assert loaded.MONGODB_DB_NAME == "svmp"
-    assert loaded.MONGODB_SESSION_COLLECTION == "session_state"
-    assert loaded.MONGODB_KB_COLLECTION == "knowledge_base"
-    assert loaded.MONGODB_GOVERNANCE_COLLECTION == "governance_logs"
-    assert loaded.MONGODB_TENANTS_COLLECTION == "tenants"
-    assert loaded.MONGODB_VERIFIED_USERS_COLLECTION == "verified_users"
-    assert loaded.MONGODB_BILLING_SUBSCRIPTIONS_COLLECTION == "billing_subscriptions"
-    assert loaded.MONGODB_INTEGRATION_STATUS_COLLECTION == "integration_status"
-    assert loaded.MONGODB_AUDIT_LOGS_COLLECTION == "audit_logs"
-    assert loaded.MONGODB_PROVIDER_EVENTS_COLLECTION == "provider_events"
+    assert loaded.DATABASE_URL is None
     assert loaded.SHARED_KB_TENANT_ID == "__shared__"
     assert loaded.DEBOUNCE_MS == 2500
     assert loaded.SIMILARITY_THRESHOLD == pytest.approx(0.75)
     assert loaded.WORKFLOW_B_INTERVAL_SECONDS == 1
     assert loaded.WORKFLOW_B_PROCESSING_LOCK_TIMEOUT_SECONDS == 300
+    assert loaded.WORKFLOW_B_MAX_BATCH_SIZE == 25
     assert loaded.WORKFLOW_C_INTERVAL_HOURS == 24
     assert loaded.EMBEDDING_MODEL == "text-embedding-3-small"
     assert loaded.LLM_MODEL == "gpt-4.1"
@@ -45,11 +37,14 @@ def test_settings_defaults_load() -> None:
     assert loaded.WEBHOOK_PUBLIC_BASE_URL is None
     assert loaded.ALLOW_NORMALIZED_WEBHOOKS is False
     assert loaded.DASHBOARD_AUTH_MODE == "disabled"
-    assert loaded.CLERK_ISSUER is None
-    assert loaded.CLERK_JWKS_URL is None
-    assert loaded.CLERK_AUDIENCE is None
+    assert loaded.SUPABASE_PROJECT_URL is None
+    assert loaded.SUPABASE_JWT_ISSUER is None
+    assert loaded.SUPABASE_JWKS_URL is None
+    assert loaded.SUPABASE_JWT_AUDIENCE == "authenticated"
     assert loaded.DASHBOARD_APP_URL is None
     assert loaded.DASHBOARD_CORS_ORIGINS is None
+    assert loaded.INTERNAL_JOB_SECRET is None
+    assert loaded.CRON_SECRET is None
     assert loaded.STRIPE_SECRET_KEY is None
     assert loaded.STRIPE_WEBHOOK_SECRET is None
     assert loaded.STRIPE_PRICE_ID is None
@@ -60,7 +55,7 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     """Environment variables override settings defaults."""
 
     monkeypatch.setenv("APP_NAME", "SVMP-Test")
-    monkeypatch.setenv("MONGODB_DB_NAME", "svmp_test")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://example.test/postgres")
     monkeypatch.setenv("DEBOUNCE_MS", "3000")
     monkeypatch.setenv("USE_OPENAI_MATCHER", "true")
     monkeypatch.setenv("OPENAI_SHADOW_MODE", "true")
@@ -73,7 +68,7 @@ def test_settings_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
     loaded = Settings(_env_file=None)
 
     assert loaded.APP_NAME == "SVMP-Test"
-    assert loaded.MONGODB_DB_NAME == "svmp_test"
+    assert loaded.DATABASE_URL == "postgresql://example.test/postgres"
     assert loaded.DEBOUNCE_MS == 3000
     assert loaded.USE_OPENAI_MATCHER is True
     assert loaded.OPENAI_SHADOW_MODE is True
@@ -98,12 +93,34 @@ def test_dashboard_cors_origins_are_normalized_and_deduplicated() -> None:
     ]
 
 
+def test_supabase_auth_helpers_derive_defaults_from_project_url() -> None:
+    """Issuer and JWKS should derive from the Supabase project URL when omitted."""
+
+    settings = Settings(
+        _env_file=None,
+        SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
+    )
+
+    assert settings.supabase_auth_issuer() == "https://project-ref.supabase.co/auth/v1"
+    assert settings.supabase_jwks_url() == "https://project-ref.supabase.co/auth/v1/.well-known/jwks.json"
+
+
+def test_internal_job_secret_prefers_internal_secret_and_falls_back_to_cron_secret() -> None:
+    """Internal routes should work with either dedicated or Vercel cron secrets."""
+
+    from_internal_secret = Settings(_env_file=None, INTERNAL_JOB_SECRET="internal-secret")
+    from_cron_secret = Settings(_env_file=None, CRON_SECRET="cron-secret")
+
+    assert from_internal_secret.internal_job_secret() == "internal-secret"
+    assert from_cron_secret.internal_job_secret() == "cron-secret"
+
+
 def test_validate_runtime_requires_meta_values() -> None:
     """Meta mode should require the configured WhatsApp credentials."""
 
     settings = Settings(
         _env_file=None,
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
     )
 
@@ -116,29 +133,9 @@ def test_validate_runtime_accepts_twilio_values() -> None:
 
     settings = Settings(
         _env_file=None,
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
         WHATSAPP_PROVIDER="twilio",
-        TWILIO_ACCOUNT_SID="AC123",
-        TWILIO_AUTH_TOKEN="secret",
-        TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
-    )
-
-    settings.validate_runtime()
-
-
-def test_validate_runtime_accepts_twilio_and_meta_credentials_together() -> None:
-    """A single runtime may carry both provider credential sets at once."""
-
-    settings = Settings(
-        _env_file=None,
-        MONGODB_URI="mongodb://unit-test",
-        OPENAI_API_KEY="test-key",
-        WHATSAPP_PROVIDER="meta",
-        WHATSAPP_TOKEN="meta-token",
-        WHATSAPP_PHONE_NUMBER_ID="1234567890",
-        WHATSAPP_VERIFY_TOKEN="verify-me",
-        META_APP_SECRET="app-secret",
         TWILIO_ACCOUNT_SID="AC123",
         TWILIO_AUTH_TOKEN="secret",
         TWILIO_WHATSAPP_NUMBER="whatsapp:+14155238886",
@@ -152,7 +149,7 @@ def test_validate_runtime_accepts_normalized_provider_with_secret() -> None:
 
     settings = Settings(
         _env_file=None,
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
         WHATSAPP_PROVIDER="normalized",
         NORMALIZED_WEBHOOK_SECRET="internal-secret",
@@ -161,40 +158,58 @@ def test_validate_runtime_accepts_normalized_provider_with_secret() -> None:
     settings.validate_runtime()
 
 
-def test_validate_runtime_requires_clerk_dashboard_auth_in_production() -> None:
-    """Production should not boot dashboard APIs without Clerk tenant auth."""
+def test_validate_runtime_requires_supabase_dashboard_auth_in_production() -> None:
+    """Production should not boot dashboard APIs without Supabase tenant auth."""
 
     settings = Settings(
         _env_file=None,
         APP_ENV="production",
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
         WHATSAPP_PROVIDER="normalized",
         NORMALIZED_WEBHOOK_SECRET="internal-secret",
     )
 
-    with pytest.raises(ConfigError, match="DASHBOARD_AUTH_MODE=clerk"):
+    with pytest.raises(ConfigError, match="DASHBOARD_AUTH_MODE=supabase"):
         settings.validate_runtime()
 
 
-def test_validate_runtime_accepts_production_clerk_dashboard_auth_with_manual_billing() -> None:
-    """Manual pilot billing should not require Stripe keys."""
+def test_validate_runtime_accepts_production_supabase_dashboard_auth_with_vercel_cron_secret() -> None:
+    """Vercel cron can satisfy internal job auth without a separate secret."""
 
     settings = Settings(
         _env_file=None,
         APP_ENV="production",
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
         WHATSAPP_PROVIDER="normalized",
         NORMALIZED_WEBHOOK_SECRET="internal-secret",
-        DASHBOARD_AUTH_MODE="clerk",
-        CLERK_ISSUER="https://example.clerk.accounts.dev",
-        CLERK_JWKS_URL="https://example.clerk.accounts.dev/.well-known/jwks.json",
-        CLERK_AUDIENCE="svmp-dashboard",
+        DASHBOARD_AUTH_MODE="supabase",
         DASHBOARD_APP_URL="https://app.svmpsystems.com",
+        SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
+        CRON_SECRET="cron-secret",
     )
 
     settings.validate_runtime()
+
+
+def test_validate_runtime_requires_internal_job_secret_or_cron_secret_in_production() -> None:
+    """Production should not expose internal cron routes without shared authentication."""
+
+    settings = Settings(
+        _env_file=None,
+        APP_ENV="production",
+        DATABASE_URL="postgresql://unit-test/postgres",
+        OPENAI_API_KEY="test-key",
+        WHATSAPP_PROVIDER="normalized",
+        NORMALIZED_WEBHOOK_SECRET="internal-secret",
+        DASHBOARD_AUTH_MODE="supabase",
+        DASHBOARD_APP_URL="https://app.svmpsystems.com",
+        SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
+    )
+
+    with pytest.raises(ConfigError, match="INTERNAL_JOB_SECRET or CRON_SECRET"):
+        settings.validate_runtime()
 
 
 def test_validate_runtime_requires_stripe_values_when_gateway_billing_is_enabled() -> None:
@@ -203,15 +218,14 @@ def test_validate_runtime_requires_stripe_values_when_gateway_billing_is_enabled
     settings = Settings(
         _env_file=None,
         APP_ENV="production",
-        MONGODB_URI="mongodb://unit-test",
+        DATABASE_URL="postgresql://unit-test/postgres",
         OPENAI_API_KEY="test-key",
         WHATSAPP_PROVIDER="normalized",
         NORMALIZED_WEBHOOK_SECRET="internal-secret",
-        DASHBOARD_AUTH_MODE="clerk",
-        CLERK_ISSUER="https://example.clerk.accounts.dev",
-        CLERK_JWKS_URL="https://example.clerk.accounts.dev/.well-known/jwks.json",
-        CLERK_AUDIENCE="svmp-dashboard",
+        DASHBOARD_AUTH_MODE="supabase",
         DASHBOARD_APP_URL="https://app.svmpsystems.com",
+        SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
+        INTERNAL_JOB_SECRET="cron-secret",
         BILLING_MODE="stripe",
     )
 

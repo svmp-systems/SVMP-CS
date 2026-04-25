@@ -7,16 +7,16 @@ from datetime import datetime, timedelta, timezone
 
 import jwt
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 from fastapi import HTTPException
-from cryptography.hazmat.primitives.asymmetric import rsa
 
 from svmp_core.auth import (
     AuthenticatedUser,
     PortalRole,
     SubscriptionStatus,
     TenantContext,
+    authenticated_user_from_supabase_jwt,
     authenticated_user_from_trusted_headers,
-    authenticated_user_from_clerk_jwt,
     require_active_subscription,
     require_role,
     tenant_context_from_record,
@@ -52,10 +52,10 @@ def test_authenticated_user_from_trusted_headers_normalizes_values() -> None:
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_from_clerk_jwt_verifies_signature_and_claims(
+async def test_authenticated_user_from_supabase_jwt_verifies_signature_and_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Clerk JWT mode should verify JWKS signature, issuer, audience, and identity claims."""
+    """Supabase JWT mode should verify JWKS signature, issuer, audience, and identity claims."""
 
     private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     public_jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
@@ -70,10 +70,10 @@ async def test_authenticated_user_from_clerk_jwt_verifies_signature_and_claims(
     token = jwt.encode(
         {
             "sub": "user_123",
-            "org_id": "org_123",
             "email": "owner@stayparfums.com",
-            "iss": "https://clerk.example",
-            "aud": "svmp-dashboard",
+            "app_metadata": {"organization_id": "org_123"},
+            "iss": "https://project-ref.supabase.co/auth/v1",
+            "aud": "authenticated",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=5)).timestamp()),
         },
@@ -82,32 +82,31 @@ async def test_authenticated_user_from_clerk_jwt_verifies_signature_and_claims(
         headers={"kid": "test-key"},
     )
 
-    user = await authenticated_user_from_clerk_jwt(
+    user = await authenticated_user_from_supabase_jwt(
         token,
         settings=Settings(
             _env_file=None,
-            CLERK_ISSUER="https://clerk.example",
-            CLERK_JWKS_URL="https://clerk.example/.well-known/jwks.json",
-            CLERK_AUDIENCE="svmp-dashboard",
+            SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
+            SUPABASE_JWT_AUDIENCE="authenticated",
         ),
     )
 
     assert user.user_id == "user_123"
     assert user.organization_id == "org_123"
-    assert user.auth_provider == "clerk"
+    assert user.auth_provider == "supabase"
     assert user.email == "owner@stayparfums.com"
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_from_clerk_jwt_allows_missing_org_context(
+async def test_authenticated_user_from_supabase_jwt_allows_missing_org_context(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Mongo verified_users resolves tenant access, so Clerk org context is optional."""
+    """Tenant memberships resolve access, so organization context is optional."""
 
-    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    public_jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key.public_key()))
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    public_jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(private_key.public_key()))
     public_jwk["kid"] = "test-key"
-    public_jwk["alg"] = "RS256"
+    public_jwk["alg"] = "ES256"
 
     async def fake_fetch_jwks(jwks_url: str):
         return {"keys": [public_jwk]}
@@ -117,21 +116,21 @@ async def test_authenticated_user_from_clerk_jwt_allows_missing_org_context(
     token = jwt.encode(
         {
             "sub": "user_123",
-            "iss": "https://clerk.example",
+            "iss": "https://project-ref.supabase.co/auth/v1",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=5)).timestamp()),
         },
         private_key,
-        algorithm="RS256",
+        algorithm="ES256",
         headers={"kid": "test-key"},
     )
 
-    user = await authenticated_user_from_clerk_jwt(
+    user = await authenticated_user_from_supabase_jwt(
         token,
         settings=Settings(
             _env_file=None,
-            CLERK_ISSUER="https://clerk.example",
-            CLERK_JWKS_URL="https://clerk.example/.well-known/jwks.json",
+            SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
+            SUPABASE_JWT_AUDIENCE=None,
         ),
     )
 
@@ -140,15 +139,14 @@ async def test_authenticated_user_from_clerk_jwt_allows_missing_org_context(
 
 
 @pytest.mark.asyncio
-async def test_authenticated_user_from_clerk_jwt_rejects_unsupported_algorithm() -> None:
-    """Clerk JWT mode should only accept the expected RSA signing algorithm."""
+async def test_authenticated_user_from_supabase_jwt_rejects_unsupported_algorithm() -> None:
+    """Supabase JWT mode should only accept supported asymmetric algorithms."""
 
     now = datetime.now(timezone.utc)
     token = jwt.encode(
         {
             "sub": "user_123",
-            "org_id": "org_123",
-            "iss": "https://clerk.example",
+            "iss": "https://project-ref.supabase.co/auth/v1",
             "iat": int(now.timestamp()),
             "exp": int((now + timedelta(minutes=5)).timestamp()),
         },
@@ -158,21 +156,20 @@ async def test_authenticated_user_from_clerk_jwt_rejects_unsupported_algorithm()
     )
 
     with pytest.raises(HTTPException) as exc_info:
-        await authenticated_user_from_clerk_jwt(
+        await authenticated_user_from_supabase_jwt(
             token,
             settings=Settings(
                 _env_file=None,
-                CLERK_ISSUER="https://clerk.example",
-                CLERK_JWKS_URL="https://clerk.example/.well-known/jwks.json",
+                SUPABASE_PROJECT_URL="https://project-ref.supabase.co",
             ),
         )
 
     assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "unsupported Clerk token algorithm"
+    assert exc_info.value.detail == "unsupported Supabase token algorithm"
 
 
-def test_tenant_context_from_record_uses_backend_owned_verified_user_record() -> None:
-    """Tenant context should come from backend user access data, not browser tenant input."""
+def test_tenant_context_from_record_uses_backend_owned_membership_record() -> None:
+    """Tenant context should come from backend access data, not browser tenant input."""
 
     user = AuthenticatedUser(
         user_id="user_123",

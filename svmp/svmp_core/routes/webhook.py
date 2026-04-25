@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from json import JSONDecodeError
 from typing import Any
 from urllib.parse import parse_qsl
@@ -15,7 +17,11 @@ from svmp_core.db.base import Database
 from svmp_core.exceptions import DatabaseError, SecurityError, ValidationError
 from svmp_core.integrations import get_whatsapp_provider
 from svmp_core.integrations.webhook_security import verify_inbound_webhook
-from svmp_core.workflows import run_workflow_a
+from svmp_core.logger import get_logger
+from svmp_core.models import SessionState
+from svmp_core.workflows import run_workflow_a, run_workflow_b
+
+logger = get_logger(__name__)
 
 
 def build_webhook_router(
@@ -27,6 +33,39 @@ def build_webhook_router(
 
     runtime_settings = settings or get_settings()
     router = APIRouter()
+
+    async def _attempt_inline_processing(sessions: list[SessionState]) -> None:
+        unique_sessions = {
+            session.id: session
+            for session in sessions
+            if session.id is not None
+        }
+        if not unique_sessions:
+            return
+
+        latest_debounce_expires_at = max(
+            session.debounce_expires_at
+            for session in unique_sessions.values()
+        )
+        delay_seconds = (
+            latest_debounce_expires_at - datetime.now(timezone.utc)
+        ).total_seconds()
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+        for session_id in unique_sessions:
+            try:
+                await run_workflow_b(
+                    database,
+                    settings=runtime_settings,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "webhook_inline_processing_failed",
+                    sessionId=session_id,
+                    error=str(exc),
+                )
 
     def _http_400(detail: str) -> HTTPException:
         return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=detail)
@@ -178,6 +217,7 @@ def build_webhook_router(
             raise _http_400(str(exc)) from exc
 
         session_id = ""
+        ingested_sessions: list[SessionState] = []
 
         try:
             for payload in payloads:
@@ -186,8 +226,10 @@ def build_webhook_router(
                     payload,
                     settings=runtime_settings,
                 )
+                ingested_sessions.append(session)
                 if session.id is not None and not session_id:
                     session_id = session.id
+            await _attempt_inline_processing(ingested_sessions)
         except ValidationError as exc:
             raise _http_400(str(exc)) from exc
         except DatabaseError as exc:

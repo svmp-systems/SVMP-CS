@@ -1,87 +1,72 @@
 # Production Portal Launch
 
-## Goal
+## 1. Supabase
 
-The customer portal should be private by default. A user must sign in through Clerk, map to one SVMP tenant through MongoDB `verified_users`, and pass backend role/subscription checks before any tenant data is returned.
+- Create the production Supabase project.
+- Apply `supabase/migrations/202604250001_svmp_schema.sql`.
+- Generate the pooled Postgres connection string for `DATABASE_URL`.
+- Record the project URL for `SUPABASE_PROJECT_URL`.
+- Confirm the Auth issuer and JWKS URL.
 
-## Frontend Env
+## 2. Backend Vercel Project
 
-Set these in Vercel for the customer portal:
+Deploy `svmp/` as its own Vercel project.
 
-```text
-NEXT_PUBLIC_PORTAL_AUTH_MODE=clerk
-NEXT_PUBLIC_API_BASE_URL=https://api.svmpsystems.com
-NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=pk_live_...
-CLERK_SECRET_KEY=sk_live_...
-CLERK_JWT_TEMPLATE=svmp-dashboard
-NEXT_PUBLIC_CLERK_JWT_TEMPLATE=svmp-dashboard
-NEXT_PUBLIC_CLERK_SIGN_IN_URL=/login
-NEXT_PUBLIC_CLERK_SIGN_UP_URL=/signup
-```
+Set:
 
-The Clerk JWT template should include the Clerk user id and email claim. Email is required only when you seed an invite before you know the Clerk user id.
+- `DATABASE_URL`
+- `OPENAI_API_KEY`
+- WhatsApp provider secrets
+- `DASHBOARD_AUTH_MODE=supabase`
+- `DASHBOARD_APP_URL`
+- `SUPABASE_PROJECT_URL`
+- `SUPABASE_JWT_ISSUER`
+- `SUPABASE_JWKS_URL`
+- `SUPABASE_JWT_AUDIENCE`
+- `CRON_SECRET`
+- optionally `INTERNAL_JOB_SECRET`
+- Stripe secrets when `BILLING_MODE=stripe`
 
-Do not enable preview auth for paid-client production access:
+Notes:
 
-```text
-PORTAL_ALLOW_UNSAFE_PREVIEW_AUTH=false
-```
+- `svmp/vercel.json` configures the Python function duration and registers cron routes.
+- Vercel Cron sends `GET` requests with `Authorization: Bearer <CRON_SECRET>`.
 
-## Backend Env
+## 3. Portal Vercel Project
 
-Set these on the FastAPI host:
+Deploy `web/` as its own Vercel project.
 
-```text
-APP_ENV=production
-DASHBOARD_AUTH_MODE=clerk
-DASHBOARD_APP_URL=https://app.svmpsystems.com
-DASHBOARD_CORS_ORIGINS=https://svmp-cs.vercel.app,https://app.svmpsystems.com
-CLERK_ISSUER=https://your-clerk-issuer
-CLERK_JWKS_URL=https://your-clerk-issuer/.well-known/jwks.json
-CLERK_AUDIENCE=svmp-dashboard
-BILLING_MODE=manual
-```
+Set:
 
-Keep the existing MongoDB, OpenAI, and WhatsApp provider secrets configured too.
+- `NEXT_PUBLIC_API_BASE_URL`
+- `NEXT_PUBLIC_PORTAL_AUTH_MODE=supabase`
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+- `NEXT_PUBLIC_BILLING_MODE`
 
-Stripe is not required for pilots. Paid access is manually accepted by setting the tenant subscription status to `active` or `trialing` in MongoDB.
+Do not enable preview auth in production.
 
-## Access Setup
+## 4. Seed Production Access
 
-1. Create the tenant document in MongoDB.
-2. Add or invite the user in Clerk.
-3. Copy the Clerk user id when available.
-4. Seed the backend verified user access:
+Before inviting real users:
 
-```powershell
-& .\.venv\Scripts\python.exe .\scripts\seed_portal_access.py `
-  --tenant-id stay `
-  --provider-user-id user_... `
-  --email prnvvh@gmail.com `
-  --role owner `
-  --subscription-status active
-```
+1. Seed the tenant record with `scripts/seed_tenant.py`.
+2. Seed the knowledge base with `scripts/seed_knowledge_base.py`.
+3. Seed at least one owner membership with `scripts/seed_portal_access.py`.
 
-The browser never sends or chooses `tenantId`. The backend resolves it from `verified_users`.
+## 5. Cutover Checks
 
-You do not need to manually create `verified_users` in MongoDB first. MongoDB creates it on first insert, and the backend also creates indexes for it on startup.
+- backend `/health` returns `200`
+- portal login completes through Supabase
+- `/api/me` resolves the correct tenant and role
+- billing checkout creation works for an owner
+- webhook verification passes for the configured provider
+- a live inbound message is answered or escalated end to end
+- Vercel cron runs appear in backend runtime logs
 
-For an email invite before the user has a Clerk id, omit `--provider-user-id`; the script creates an `invited` record. On first login, the backend binds the Clerk user id and marks the record active.
+## 6. After Launch
 
-For manual pilots, the same command can mark the tenant active with:
-
-```powershell
---subscription-status active
-```
-
-That writes/updates `billing_subscriptions` and mirrors `billing.status` on the tenant document.
-
-## Sanity Checks
-
-- Incognito `/dashboard` redirects to `/login`.
-- Login works inside `/login`, not by directly opening a public dashboard.
-- `/api/me` returns exactly one tenant context.
-- Dashboard API requests include a Clerk bearer token.
-- FastAPI rejects dashboard API requests without auth.
-- Operational APIs return `402` when manual subscription status is not `active` or `trialing`.
-- KB, brand voice, settings, and WhatsApp edits create audit logs.
+- review governance logs daily during the first launch window
+- confirm subscription state sync after first Stripe events
+- monitor session backlog drain counts from `/internal/jobs/process-ready-sessions`
+- keep onboarding limited until it is moved to a durable worker path

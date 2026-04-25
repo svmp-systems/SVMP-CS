@@ -1,17 +1,13 @@
-import { ClerkSignInPanel } from "@/components/auth/clerk-sign-in-panel";
 import { PreviewLogin } from "@/components/auth/preview-login";
-import { getAuthSafe } from "@/lib/clerk-auth";
-import {
-  authConfigurationIssue,
-  isClerkConfigured,
-  isUnsafePreviewAuthEnabled,
-} from "@/lib/clerk-env";
+import { SupabaseAuthPanel } from "@/components/auth/supabase-auth-panel";
+import { authConfigurationIssue, isSupabaseConfigured, isUnsafePreviewAuthEnabled } from "@/lib/portal-auth-env";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { redirect } from "next/navigation";
 
 const checks = [
-  "Magic-link sign-in for invited users",
-  "Google SSO verifies the user identity",
-  "Tenant access resolved from Mongo verified users",
+  "Google sign-in through Supabase Auth",
+  "Magic-link access for invited users",
+  "Tenant membership resolved from Supabase-backed portal access records",
   "Inactive subscriptions routed to billing only",
 ];
 
@@ -20,10 +16,9 @@ export default async function LoginPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const clerkConfigured = isClerkConfigured();
+  const supabaseConfigured = isSupabaseConfigured();
   const previewEnabled = isUnsafePreviewAuthEnabled();
   const configurationIssue = authConfigurationIssue();
-  const { userId } = clerkConfigured ? await getAuthSafe() : { userId: null };
   const params = await searchParams;
   const requestedNext = params.next;
   const nextPath =
@@ -31,8 +26,12 @@ export default async function LoginPage({
       ? requestedNext
       : "/dashboard";
 
-  if (userId) {
-    redirect("/dashboard");
+  if (supabaseConfigured) {
+    const supabase = await createServerSupabaseClient();
+    const { data } = await supabase.auth.getClaims();
+    if (data?.claims?.sub) {
+      redirect("/dashboard");
+    }
   }
 
   return (
@@ -48,7 +47,8 @@ export default async function LoginPage({
               Sign in to manage your AI support system.
             </h1>
             <p className="mt-7 text-lg leading-8 text-ink/68">
-              Paid client access is tied to a verified user record. SVMP CS resolves the tenant on the backend and gates operational pages by subscription state.
+              Production access runs through Supabase Auth. The backend resolves the tenant membership, role, and
+              subscription state before any operational dashboard data is returned.
             </p>
           </div>
           <div className="grid gap-px overflow-hidden rounded-[8px] border border-line bg-line">
@@ -65,16 +65,16 @@ export default async function LoginPage({
             <p className="text-sm font-semibold text-pine">Portal access</p>
             <h2 className="mt-3 text-2xl font-semibold">Welcome back</h2>
             <p className="mt-3 text-sm leading-6 text-ink/62">
-              {clerkConfigured
-                ? "Use Google or your invited email. The backend checks MongoDB for your tenant, role, and permissions before returning any dashboard data."
+              {supabaseConfigured
+                ? "Use Google or your work email. Supabase authenticates the user, and the backend decides which tenant and role that session is allowed to access."
                 : previewEnabled
                   ? "Use the temporary built-in portal password. Tenant access is still resolved on the server before dashboard pages render."
                   : "Authentication is locked until the production auth environment is configured."}
             </p>
 
             <div className="mt-8">
-              {clerkConfigured ? (
-                <ClerkSignInPanel />
+              {supabaseConfigured ? (
+                <SupabaseAuthPanel nextPath={nextPath} />
               ) : previewEnabled ? (
                 <PreviewLogin nextPath={nextPath} />
               ) : (

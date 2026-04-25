@@ -8,6 +8,7 @@ import hmac
 import json
 from collections.abc import Mapping
 from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any
 
 from fastapi import FastAPI
@@ -67,13 +68,13 @@ class InMemorySessionStateRepository(SessionStateRepository):
         return updated.model_copy(deep=True)
 
     async def acquire_ready_session(self, now):
-        raise NotImplementedError
+        return None
 
     async def acquire_ready_session_by_id(self, session_id, now):
-        raise NotImplementedError
+        return None
 
     async def delete_stale_sessions(self, before):
-        raise NotImplementedError
+        return 0
 
 
 class StubKnowledgeRepository(KnowledgeBaseRepository):
@@ -150,28 +151,12 @@ class InMemoryDatabase(Database):
         return None
 
 
-class SchedulerStub:
-    """Minimal scheduler stub that records one-shot Workflow B jobs."""
-
-    def __init__(self) -> None:
-        self.jobs: dict[str, dict[str, Any]] = {}
-
-    def add_job(self, func, trigger: str, id: str, replace_existing: bool, kwargs: dict[str, Any], **schedule):
-        self.jobs[id] = {
-            "func": func,
-            "trigger": trigger,
-            "replace_existing": replace_existing,
-            "kwargs": kwargs,
-            "schedule": schedule,
-        }
-
-
 def _settings() -> Settings:
     """Return deterministic webhook settings for tests."""
 
     return Settings(
         _env_file=None,
-        DEBOUNCE_MS=2500,
+        DEBOUNCE_MS=0,
         WHATSAPP_VERIFY_TOKEN="verify-me",
         META_APP_SECRET="meta-secret",
         TWILIO_AUTH_TOKEN="twilio-secret",
@@ -183,14 +168,11 @@ def _build_client(
     *,
     database: InMemoryDatabase | None = None,
     settings: Settings | None = None,
-    scheduler: SchedulerStub | None = None,
 ) -> tuple[TestClient, InMemoryDatabase]:
     """Build a FastAPI test app with the webhook router attached."""
 
     runtime_database = database or InMemoryDatabase()
     app = FastAPI()
-    if scheduler is not None:
-        app.state.scheduler = scheduler
     app.include_router(build_webhook_router(runtime_database, settings=settings or _settings()))
     return TestClient(app), runtime_database
 
@@ -268,11 +250,29 @@ def test_webhook_post_intakes_valid_payload() -> None:
     }
 
 
-def test_webhook_post_schedules_exact_session_processing_at_debounce_expiry() -> None:
-    """POST intake should schedule Workflow B exactly for the session's debounce expiry."""
+def test_webhook_post_attempts_inline_processing_for_ingested_session(monkeypatch) -> None:
+    """Webhook intake should attempt stateless inline Workflow B processing."""
 
-    scheduler = SchedulerStub()
-    client, _ = _build_client(scheduler=scheduler)
+    attempted_session_ids: list[str] = []
+
+    async def fake_run_workflow_b(database, *, settings=None, now=None, session_id=None):
+        attempted_session_ids.append(session_id)
+        return SimpleNamespace(
+            processed=True,
+            session_id=session_id,
+            decision=None,
+            combined_text=None,
+            domain_id=None,
+            similarity_score=None,
+            answer_supplied=None,
+            outbound_send_result=None,
+            escalation_target=None,
+            reason=None,
+            matcher_used=None,
+        )
+
+    monkeypatch.setattr("svmp_core.routes.webhook.run_workflow_b", fake_run_workflow_b)
+    client, _ = _build_client()
 
     response = client.post(
         "/webhook",
@@ -285,11 +285,7 @@ def test_webhook_post_schedules_exact_session_processing_at_debounce_expiry() ->
     )
 
     assert response.status_code == 200
-    assert "workflow_b_session_session-1" in scheduler.jobs
-    job = scheduler.jobs["workflow_b_session_session-1"]
-    assert job["trigger"] == "date"
-    assert job["replace_existing"] is True
-    assert job["kwargs"]["session_id"] == "session-1"
+    assert attempted_session_ids == ["session-1"]
 
 
 def test_webhook_post_rejects_malformed_payload() -> None:
@@ -331,7 +327,7 @@ def test_webhook_post_normalizes_meta_payload() -> None:
                                     "from": "919845891194",
                                     "text": {"body": "hello from meta"},
                                 }
-                            ]
+                            ],
                         }
                     }
                 ]
@@ -443,6 +439,7 @@ def test_webhook_post_rejects_normalized_payloads_unless_enabled() -> None:
     client, _ = _build_client(
         settings=Settings(
             _env_file=None,
+            DEBOUNCE_MS=0,
             ALLOW_NORMALIZED_WEBHOOKS=False,
         )
     )

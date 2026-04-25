@@ -1,29 +1,30 @@
 import "server-only";
 
-import { auth } from "@clerk/nextjs/server";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import { isClerkConfigured, isUnsafePreviewAuthEnabled } from "@/lib/clerk-env";
+import { isSupabaseConfigured, isUnsafePreviewAuthEnabled } from "@/lib/portal-auth-env";
 import { PREVIEW_SESSION_COOKIE, verifyPreviewSession } from "@/lib/preview-auth";
+import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { createPreviewApi } from "./preview";
 import { createBrowserApi, type BrowserApi } from "./shared";
 
-const clerkJwtTemplate = process.env.CLERK_JWT_TEMPLATE?.trim() || process.env.NEXT_PUBLIC_CLERK_JWT_TEMPLATE?.trim() || undefined;
-
 async function requireServerToken() {
-  const { userId, getToken } = await auth();
+  const supabase = await createServerSupabaseClient();
+  const { data } = await supabase.auth.getClaims();
 
-  if (!userId) {
+  if (!data?.claims?.sub) {
     redirect("/login");
   }
 
-  const token = await getToken(clerkJwtTemplate ? { template: clerkJwtTemplate } : undefined);
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  if (!token) {
+  if (!session?.access_token) {
     redirect("/login");
   }
 
-  return token;
+  return session.access_token;
 }
 
 type ServerApi = Omit<BrowserApi, never>;
@@ -40,7 +41,7 @@ export async function getServerApi(): Promise<ServerApi> {
     return createPreviewApi(session);
   }
 
-  if (!isClerkConfigured()) {
+  if (!isSupabaseConfigured()) {
     redirect("/login?configuration=required");
   }
 

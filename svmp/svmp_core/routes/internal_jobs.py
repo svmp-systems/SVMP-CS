@@ -43,7 +43,7 @@ def _require_internal_job_auth(
     job_secret_header: str | None,
 ) -> None:
     settings = _settings_from_request(request)
-    expected_secret = _secret_value(settings.INTERNAL_JOB_SECRET)
+    expected_secret = settings.internal_job_secret()
     if expected_secret is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -64,8 +64,10 @@ async def _run_workflow_b_batch(
     settings: Settings,
     max_runs: int,
 ) -> dict[str, Any]:
+    effective_limit = max(1, min(max_runs, settings.WORKFLOW_B_MAX_BATCH_SIZE))
     processed: list[dict[str, Any]] = []
-    for _ in range(max(1, min(max_runs, settings.WORKFLOW_B_MAX_BATCH_SIZE))):
+    drained = True
+    for _ in range(effective_limit):
         result = await run_workflow_b(database, settings=settings)
         if not result.processed:
             break
@@ -78,11 +80,16 @@ async def _run_workflow_b_batch(
                 "reason": result.reason,
             }
         )
+    else:
+        drained = False
 
     return {
         "status": "ok",
         "processedCount": len(processed),
-        "drained": len(processed) < max_runs,
+        "drained": drained,
+        "capacityReached": len(processed) == effective_limit,
+        "maxRunsRequested": max_runs,
+        "maxRunsApplied": effective_limit,
         "runs": processed,
     }
 
@@ -92,7 +99,7 @@ def build_internal_jobs_router() -> APIRouter:
 
     router = APIRouter(prefix="/internal", tags=["internal"])
 
-    @router.post("/jobs/process-ready-sessions")
+    @router.api_route("/jobs/process-ready-sessions", methods=["GET", "POST"])
     async def process_ready_sessions(
         request: Request,
         max_runs: int = Query(default=25, alias="maxRuns", ge=1, le=100),
@@ -106,7 +113,7 @@ def build_internal_jobs_router() -> APIRouter:
             max_runs=max_runs,
         )
 
-    @router.post("/jobs/cleanup-stale-sessions")
+    @router.api_route("/jobs/cleanup-stale-sessions", methods=["GET", "POST"])
     async def cleanup_stale_sessions(
         request: Request,
         authorization: str | None = Header(default=None, alias="Authorization"),

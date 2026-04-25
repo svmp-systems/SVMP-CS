@@ -1,4 +1,4 @@
-"""Seed a tenant configuration document into MongoDB for live demo verification."""
+"""Seed a tenant configuration document into Supabase/Postgres."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import asyncio
 import json
 import sys
 from collections.abc import Mapping, Sequence
-from copy import deepcopy
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -19,9 +18,8 @@ PACKAGE_ROOT = REPO_ROOT / "svmp"
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from motor.motor_asyncio import AsyncIOMotorClient
-
 from svmp_core.config import Settings, get_settings
+from svmp_core.db.supabase import SupabaseDatabase
 
 DEFAULT_SAMPLE_FILE = REPO_ROOT / "scripts" / "demo_data" / "sample_tenant.json"
 
@@ -42,8 +40,6 @@ class TenantSeedSpec(BaseModel):
     @field_validator("tenant_id")
     @classmethod
     def _require_non_blank_tenant_id(cls, value: str) -> str:
-        """Trim and reject blank tenant IDs."""
-
         normalized = value.strip()
         if not normalized:
             raise ValueError("tenantId must not be blank")
@@ -57,78 +53,22 @@ class TenantSeedWriter(Protocol):
         """Upsert the provided tenant document and return the number written."""
 
 
-class MongoTenantSeedWriter:
-    """Mongo-backed writer for repeatable tenant upserts."""
+class SupabaseTenantSeedWriter:
+    """Supabase-backed writer for repeatable tenant upserts."""
 
-    def __init__(self, collection) -> None:
-        self._collection = collection
-
-    @staticmethod
-    def _channel_values(tenant_document: Mapping[str, Any]) -> list[tuple[str, list[str]]]:
-        """Extract provider channel identifiers so conflicting mappings can be cleared."""
-
-        channels = tenant_document.get("channels", {})
-        if not isinstance(channels, Mapping):
-            return []
-
-        field_map = {
-            "meta": {
-                "phoneNumberIds": "channels.meta.phoneNumberIds",
-                "displayNumbers": "channels.meta.displayNumbers",
-            },
-            "twilio": {
-                "whatsappNumbers": "channels.twilio.whatsappNumbers",
-                "accountSids": "channels.twilio.accountSids",
-            },
-        }
-
-        extracted: list[tuple[str, list[str]]] = []
-        for provider_name, provider_fields in field_map.items():
-            provider_payload = channels.get(provider_name)
-            if not isinstance(provider_payload, Mapping):
-                continue
-
-            for key, field_path in provider_fields.items():
-                raw_values = provider_payload.get(key)
-                if not isinstance(raw_values, Sequence) or isinstance(raw_values, (str, bytes)):
-                    continue
-
-                normalized_values = [
-                    value.strip()
-                    for value in raw_values
-                    if isinstance(value, str) and value.strip()
-                ]
-                if normalized_values:
-                    extracted.append((field_path, normalized_values))
-
-        return extracted
+    def __init__(self, database: SupabaseDatabase) -> None:
+        self._database = database
 
     async def upsert_tenant(self, tenant_document: Mapping[str, Any]) -> int:
-        """Upsert a tenant document using tenantId as the stable key."""
-
-        payload = deepcopy(dict(tenant_document))
-        tenant_id = payload["tenantId"]
-
-        for field_path, values in self._channel_values(payload):
-            await self._collection.update_many(
-                {"tenantId": {"$ne": tenant_id}},
-                {"$pull": {field_path: {"$in": values}}},
-            )
-
-        await self._collection.replace_one(
-            {"tenantId": tenant_id},
-            payload,
-            upsert=True,
-        )
+        await self._database.tenants.upsert_tenant(tenant_document)
         return 1
 
 
 def load_tenant_document(seed_file: Path) -> dict[str, Any]:
-    """Parse a tenant seed file into a Mongo-ready document."""
+    """Parse a tenant seed file into a tenant document."""
 
     raw_payload = json.loads(seed_file.read_text(encoding="utf-8"))
     tenant = TenantSeedSpec(**raw_payload)
-
     return tenant.model_dump(by_alias=True, exclude_none=True)
 
 
@@ -140,23 +80,22 @@ async def seed_tenant_from_file(writer: TenantSeedWriter, seed_file: Path) -> in
 
 
 async def _run(seed_file: Path, *, settings: Settings | None = None) -> int:
-    """Execute the Mongo-backed tenant seed flow and return the write count."""
+    """Execute the Supabase-backed tenant seed flow and return the write count."""
 
     runtime_settings = settings or get_settings()
-    client = AsyncIOMotorClient(runtime_settings.MONGODB_URI)
-
+    database = SupabaseDatabase(settings=runtime_settings)
+    await database.connect()
     try:
-        collection = client[runtime_settings.MONGODB_DB_NAME][runtime_settings.MONGODB_TENANTS_COLLECTION]
-        writer = MongoTenantSeedWriter(collection)
+        writer = SupabaseTenantSeedWriter(database)
         return await seed_tenant_from_file(writer, seed_file)
     finally:
-        client.close()
+        await database.disconnect()
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for the tenant seed script."""
 
-    parser = argparse.ArgumentParser(description="Seed a demo tenant document into MongoDB.")
+    parser = argparse.ArgumentParser(description="Seed a demo tenant document into Supabase/Postgres.")
     parser.add_argument(
         "--file",
         dest="seed_file",

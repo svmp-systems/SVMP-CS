@@ -19,8 +19,8 @@ def test_session_state_accepts_internal_field_names() -> None:
     assert session.messages == []
 
 
-def test_session_state_accepts_mongo_aliases() -> None:
-    """SessionState should accept Mongo-style aliases on input."""
+def test_session_state_accepts_public_api_aliases() -> None:
+    """SessionState should accept the external alias field names on input."""
 
     session = SessionState(
         tenantId="Niyomilan",

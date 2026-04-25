@@ -1,4 +1,4 @@
-"""Run a live Workflow A -> Workflow B verification against MongoDB and OpenAI."""
+"""Run a live Workflow A -> Workflow B verification against Supabase/Postgres and OpenAI."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "svmp"
@@ -16,10 +15,8 @@ PACKAGE_ROOT = REPO_ROOT / "svmp"
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from motor.motor_asyncio import AsyncIOMotorClient
-
 from svmp_core.config import Settings, get_settings
-from svmp_core.db.mongo import MongoDatabase
+from svmp_core.db.supabase import SupabaseDatabase
 from svmp_core.models import WebhookPayload
 from svmp_core.workflows import run_workflow_a, run_workflow_b
 
@@ -27,7 +24,9 @@ from svmp_core.workflows import run_workflow_a, run_workflow_b
 def _build_arg_parser() -> argparse.ArgumentParser:
     """Build the CLI argument parser for live verification."""
 
-    parser = argparse.ArgumentParser(description="Verify the live Workflow A/B path against MongoDB and OpenAI.")
+    parser = argparse.ArgumentParser(
+        description="Verify the live Workflow A/B path against Supabase/Postgres and OpenAI."
+    )
     parser.add_argument("--tenant-id", default="Stay", help="Tenant id to use for the verification payload.")
     parser.add_argument("--client-id", default="whatsapp", help="Client/channel id to use for the verification payload.")
     parser.add_argument("--user-id", default="demo-user-001", help="User id to use for the verification payload.")
@@ -39,38 +38,13 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _load_latest_governance_log(
-    settings: Settings,
-    *,
-    tenant_id: str,
-    client_id: str,
-    user_id: str,
-) -> dict[str, Any] | None:
-    """Load the latest governance log for the provided identity."""
-
-    client = AsyncIOMotorClient(settings.MONGODB_URI)
-
-    try:
-        collection = client[settings.MONGODB_DB_NAME][settings.MONGODB_GOVERNANCE_COLLECTION]
-        return await collection.find_one(
-            {
-                "tenantId": tenant_id,
-                "clientId": client_id,
-                "userId": user_id,
-            },
-            sort=[("timestamp", -1)],
-        )
-    finally:
-        client.close()
-
-
 async def _run(args: argparse.Namespace, *, settings: Settings | None = None) -> int:
     """Execute a live end-to-end verification against the configured runtime."""
 
     runtime_settings = settings or get_settings()
     runtime_settings.validate_runtime()
 
-    database = MongoDatabase(settings=runtime_settings)
+    database = SupabaseDatabase(settings=runtime_settings)
     payload = WebhookPayload(
         tenantId=args.tenant_id,
         clientId=args.client_id,
@@ -93,14 +67,17 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
             settings=runtime_settings,
             now=process_time,
         )
+        governance_logs = await database.governance_logs.list_by_tenant(args.tenant_id, limit=10)
     finally:
         await database.disconnect()
 
-    governance_log = await _load_latest_governance_log(
-        runtime_settings,
-        tenant_id=args.tenant_id,
-        client_id=args.client_id,
-        user_id=args.user_id,
+    governance_log = next(
+        (
+            log.model_dump(by_alias=True)
+            for log in governance_logs
+            if log.client_id == args.client_id and log.user_id == args.user_id
+        ),
+        None,
     )
 
     print(
@@ -126,7 +103,7 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entrypoint for live Mongo/OpenAI verification."""
+    """CLI entrypoint for live verification."""
 
     parser = _build_arg_parser()
     args = parser.parse_args(argv)

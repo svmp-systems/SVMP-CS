@@ -1,4 +1,4 @@
-"""Integration-style tests for the demo tenant seed script."""
+"""Integration-style tests for the Supabase tenant seed script."""
 
 from __future__ import annotations
 
@@ -77,62 +77,39 @@ async def test_seed_tenant_from_file_uses_writer_upsert_path(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_mongo_tenant_writer_clears_conflicting_channel_mappings() -> None:
-    """The Mongo tenant writer should remove matching channel identifiers from other tenants first."""
+async def test_supabase_tenant_writer_delegates_to_repository() -> None:
+    """The Supabase tenant writer should delegate to the tenant repository cleanly."""
 
     module = _load_seed_module()
 
-    class FakeCollection:
+    class FakeTenantRepository:
         def __init__(self) -> None:
-            self.updated: list[tuple[dict, dict]] = []
-            self.replaced: list[tuple[dict, dict, bool]] = []
+            self.payloads: list[dict] = []
 
-        async def update_many(self, filter_doc: dict, update_doc: dict) -> None:
-            self.updated.append((dict(filter_doc), dict(update_doc)))
+        async def upsert_tenant(self, tenant_document):
+            self.payloads.append(dict(tenant_document))
+            return dict(tenant_document)
 
-        async def replace_one(self, filter_doc: dict, payload: dict, upsert: bool) -> None:
-            self.replaced.append((dict(filter_doc), dict(payload), upsert))
+    class FakeDatabase:
+        def __init__(self) -> None:
+            self.tenants = FakeTenantRepository()
 
-    collection = FakeCollection()
-    writer = module.MongoTenantSeedWriter(collection)
+    database = FakeDatabase()
+    writer = module.SupabaseTenantSeedWriter(database)
 
     written = await writer.upsert_tenant(
         {
             "tenantId": "Stay",
             "domains": [{"domainId": "general", "name": "General", "description": "General help"}],
-            "channels": {
-                "twilio": {
-                    "whatsappNumbers": ["whatsapp:+14155238886"],
-                    "accountSids": ["AC123"],
-                }
-            },
+            "channels": {"twilio": {"whatsappNumbers": ["whatsapp:+14155238886"]}},
         }
     )
 
     assert written == 1
-    assert collection.updated == [
-        (
-            {"tenantId": {"$ne": "Stay"}},
-            {"$pull": {"channels.twilio.whatsappNumbers": {"$in": ["whatsapp:+14155238886"]}}},
-        ),
-        (
-            {"tenantId": {"$ne": "Stay"}},
-            {"$pull": {"channels.twilio.accountSids": {"$in": ["AC123"]}}},
-        ),
-    ]
-    assert collection.replaced == [
-        (
-            {"tenantId": "Stay"},
-            {
-                "tenantId": "Stay",
-                "domains": [{"domainId": "general", "name": "General", "description": "General help"}],
-                "channels": {
-                    "twilio": {
-                        "whatsappNumbers": ["whatsapp:+14155238886"],
-                        "accountSids": ["AC123"],
-                    }
-                },
-            },
-            True,
-        )
+    assert database.tenants.payloads == [
+        {
+            "tenantId": "Stay",
+            "domains": [{"domainId": "general", "name": "General", "description": "General help"}],
+            "channels": {"twilio": {"whatsappNumbers": ["whatsapp:+14155238886"]}},
+        }
     ]

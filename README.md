@@ -1,70 +1,49 @@
 # SVMP
 
-SVMP is a governance and orchestration layer for AI-powered customer service systems. It is a code-first FastAPI service that receives WhatsApp conversations, merges fragmented customer messages into coherent requests, routes them safely, and keeps a governance trail of what happened.
+SVMP is a governed AI customer-service platform for WhatsApp support. The system is now structured around Supabase and Vercel: Supabase provides Postgres, Auth, and cron-friendly infrastructure, while the backend and portal are designed for stateless Vercel deployments.
 
-## Direction
+## Architecture
 
-This repository is the main SVMP application. Product, runtime, tenant, security, and deployment concerns belong in this repo as one system.
-
-The near-term goal is to:
-
-- keep the SVMP runtime testable from the start
-- use repository interfaces so business logic is not tightly coupled to MongoDB
-- ship a production-oriented WhatsApp automation service from this codebase
-- leave room for a later PostgreSQL adapter if it becomes worthwhile
-
-## Repository Structure
-
-`svmp/`
-
-- FastAPI app and webhook intake
-- workflows for ingest, processing, and cleanup
-- models, config, logging, exceptions, and DB interfaces
-- MongoDB implementation first
-- OpenAI and WhatsApp provider integrations
-- tests for the application runtime
-
-`scripts/`
-
-- one-off setup and demo scripts
-- knowledge-base seeding and local/dev utilities
-
-`docs/`
-
-- architecture notes, provider setup, and schema notes
-- public landing page plan
-- customer portal product, API, auth, and billing contracts
+- `svmp/`
+  FastAPI backend for webhook intake, workflows, dashboard APIs, billing, and internal cron-triggered job endpoints.
+- `web/`
+  Next.js customer portal using Supabase Auth SSR helpers and bearer-token calls into the backend API.
+- `supabase/`
+  SQL migrations for the Postgres schema backing tenants, memberships, sessions, knowledge base entries, governance logs, billing, and provider-event idempotency.
+- `scripts/`
+  Operational and seed utilities that should target Supabase/Postgres-backed data.
+- `docs/`
+  Product, deployment, and runtime notes.
 
 ## Runtime Flow
 
-1. A webhook receives a customer message.
-2. Workflow A writes or updates session state and starts the debounce window.
-3. Workflow B picks up ready sessions, classifies intent/domain, queries the KB, generates or routes a response, and records governance data.
-4. Workflow C removes stale session state.
+1. A WhatsApp webhook lands on the FastAPI backend.
+2. Workflow A writes or updates the active session window in Postgres.
+3. A stateless internal job endpoint processes ready sessions through Workflow B.
+4. Cleanup runs through a second internal job endpoint for Workflow C.
+5. Governance, billing, and dashboard reads all come from the same Supabase-backed data model.
 
-## Status
+## Deployment Shape
 
-SVMP is now runnable in its Mongo-first app shape:
-
-- the FastAPI app boots and wires Workflow B / Workflow C scheduler jobs
-- webhook verification and inbound intake routes are available
-- provider POST webhooks are signature-checked before SVMP ingests messages
-- Workflow A, Workflow B, and Workflow C all have integration coverage
-- a demo smoke test proves ingest -> process -> governance in one end-to-end path
-- a repeatable knowledge-base seed script is available under `scripts/`
-
-Provider connection details live in [`docs/provider_connection.md`](docs/provider_connection.md).
-Public landing page planning lives in [`docs/landing_page.md`](docs/landing_page.md).
-Customer portal planning starts in [`docs/customer_portal.md`](docs/customer_portal.md), with API contracts in [`docs/dashboard_api.md`](docs/dashboard_api.md) and auth/billing rules in [`docs/auth_billing_model.md`](docs/auth_billing_model.md).
-
-Production deploys should track the latest GitHub head together with the active Vercel environment configuration.
+- Deploy `web/` to Vercel as the customer portal project.
+- Deploy `svmp/` to Vercel as a separate Python/FastAPI project.
+- Use the Supabase pooled Postgres URL for `DATABASE_URL`.
+- Use Supabase Auth for portal sign-in and JWT verification.
+- Use `svmp/vercel.json` to register the backend cron routes on Vercel.
+- Set `CRON_SECRET` in the backend Vercel project. The backend accepts either `CRON_SECRET` or `INTERNAL_JOB_SECRET` for internal job authentication.
+- Keep `/internal/jobs/process-ready-sessions` enabled as a backstop drain path even though webhook intake now attempts best-effort inline Workflow B execution.
 
 ## Quick Validation
 
-From the repo root, these commands give the fastest proof that the current app is wired correctly:
+Backend import smoke:
 
 ```bash
-python -m pytest svmp/tests/integration/test_main.py
-python -m pytest svmp/tests/integration/test_demo_smoke.py
-python -m pytest svmp/tests/integration/test_seed_script.py
+.venv\Scripts\python.exe -c "import sys; from pathlib import Path; sys.path.insert(0, str(Path('svmp').resolve())); from svmp_core.main import create_app; print(callable(create_app))"
+```
+
+Frontend typecheck:
+
+```bash
+cd web
+npm run typecheck
 ```

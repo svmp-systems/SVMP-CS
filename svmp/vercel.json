@@ -1,0 +1,18 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "functions": {
+    "main.py": {
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/internal/jobs/process-ready-sessions",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/internal/jobs/cleanup-stale-sessions",
+      "schedule": "0 * * * *"
+    }
+  ]
+}

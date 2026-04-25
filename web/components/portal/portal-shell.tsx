@@ -1,6 +1,5 @@
 "use client";
 
-import { UserButton } from "@clerk/nextjs";
 import clsx from "clsx";
 import {
   BarChart3,
@@ -10,15 +9,15 @@ import {
   LayoutDashboard,
   Link2,
   MessageSquareText,
-  ScrollText,
   Settings,
   ShieldCheck,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { isPreviewAuthMode } from "@/lib/clerk-env";
-import type { MeResponse, TenantResponse } from "@/services/api/types";
+import { SignOutButton } from "@/components/auth/sign-out-button";
+import { isPreviewAuthMode } from "@/lib/portal-auth-env";
 import { tenantDisplayName } from "@/lib/tenant-display";
+import type { MeResponse, TenantResponse } from "@/services/api/types";
 
 const navItems = [
   { label: "Overview", href: "/dashboard", icon: LayoutDashboard },
@@ -124,17 +123,16 @@ export function PortalShell({
               ))}
             </nav>
             <div>
-              <p className="text-sm font-semibold text-pine">
-                {displayName}
-              </p>
+              <p className="text-sm font-semibold text-pine">{displayName}</p>
               <p className="mt-1 text-sm text-ink/58">
-                Tenant: {displayName === "\u2014" ? "\u2014" : me.tenantId}. Role: {me.role}. Subscription: {subscriptionLabel}.
+                Tenant: {displayName === "\u2014" ? "\u2014" : me.tenantId}. Role: {me.role}. Subscription:{" "}
+                {subscriptionLabel}.
               </p>
             </div>
             <div className="flex items-center gap-3">
               {!previewAuth ? (
                 <div className="hidden rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold text-ink/68 md:block">
-                  Verified user
+                  Supabase session
                 </div>
               ) : null}
               <Link
@@ -151,14 +149,17 @@ export function PortalShell({
                   Preview user
                 </Link>
               ) : (
-                <UserButton />
+                <SignOutButton
+                  label={me.email ? `Sign out ${me.email}` : "Sign out"}
+                  className="rounded-[8px] border border-line bg-white px-4 py-2 text-sm font-semibold hover:border-ink disabled:cursor-not-allowed disabled:opacity-60"
+                />
               )}
             </div>
           </div>
           {previewAuth ? null : (
             <div className="flex items-center justify-between gap-3 px-4 pb-4 md:hidden">
               <div className="rounded-[8px] border border-line bg-white px-3 py-2 text-sm font-semibold text-ink/68">
-                Verified user
+                Supabase session
               </div>
               <Link
                 href="/settings"

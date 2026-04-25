@@ -56,7 +56,7 @@ class FailingCleanupSessionRepository(CleanupSessionRepository):
     """Repository variant that fails during deletion."""
 
     async def delete_stale_sessions(self, before: datetime) -> int:
-        raise RuntimeError("mongo down")
+        raise RuntimeError("database down")
 
 
 class StubKnowledgeRepository(KnowledgeBaseRepository):
